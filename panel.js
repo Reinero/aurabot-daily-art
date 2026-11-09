@@ -74,6 +74,8 @@ return function DailyArtPanel({ settings, draftSettings, setSettings }) {
       (settings.konachanProxyUrlSet || proxyChanged) && draftSettings.konachanProxyUrl !== null
         ? h(Btn, { small: true, onClick: () => clear('konachanProxyUrl') }, '清除代理') : null,
       proxyChanged ? h('div', { className: 'ab-small ab-muted' }, '代理设置有改动，请先保存再检测。') : null),
+    h(Card, { title: '按需找图权限' },
+      row(schema.searchAccessField, draftSettings, value => setShared(schema.searchAccessField.key, value))),
     h(Card, { title: '图源配置', desc: '每个图源单独保存时间、张数、白名单和筛选条件。' },
       h(Seg, { value: source, options: sources, disabled: busy, onChange: value => { setSource(value); setResult(null) } }),
       ...fields.map(field => row(field, values, value => setSourceField(field.key, value))),

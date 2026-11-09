@@ -31,8 +31,13 @@ export function registerImageTools(api, { fetchPosts, download = downloadKonacha
   const shutdown = new AbortController()
   const sessions = new Map()
   const triggers = new Map()
-  const allowed = chat => (chat.kind === 'private' || chat.kind === 'group') &&
-    checkAllowed(api.config(), chat).allowed && levelFor(api.config(), chat) !== 'chat'
+  const allowed = chat => {
+    if (chat.kind !== 'private' && chat.kind !== 'group') return false
+    const cfg = api.config()
+    if (!checkAllowed(cfg, chat).allowed || levelFor(cfg, chat) === 'chat') return false
+    return chat.kind !== 'private' || String(chat.userId) === String(cfg.ownerQQ ?? '') ||
+      api.settings().allowPrivateWhitelistSearch === true
+  }
   const requestOptions = source => {
     const settings = api.settings()
     return {

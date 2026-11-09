@@ -282,9 +282,12 @@ test('on-demand tools require a real trigger, filter metadata, and send only the
   const downloaded = []
   const chat = { chatId: 'group:12345', groupId: '12345', userId: '34567', kind: 'group' }
   const another = { ...chat, chatId: 'group:23456', groupId: '23456' }
-  const cfg = { enabled: true, ownerQQ: chat.userId, allow: { groups: ['12345', '23456'] } }
+  const privateChat = userId => ({ kind: 'private', chatId: `private:${userId}`, userId })
+  const guestChat = privateChat('45678')
+  const cfg = { enabled: true, ownerQQ: chat.userId, allow: { groups: ['12345', '23456'], private: [guestChat.userId] } }
   const post = (id, score, tags, rating = 's') => ({ id, score, tags, rating, width: 1920, height: 1080, sample_url: `/sample/${id}.jpg` })
   const proxyUrl = 'http://proxy.example:8080'
+  const settings = { konachanProxyUrl: proxyUrl }
   const fetchPosts = async (url, options) => {
     if (url.hostname === 'yande.re') {
       assert.equal(options.proxyUrl, proxyUrl)
@@ -298,15 +301,15 @@ test('on-demand tools require a real trigger, filter metadata, and send only the
   }
   let tools
   registerImageTools({
-    config: () => cfg, settings: () => ({ konachanProxyUrl: proxyUrl }), defineTool, onDispose() {}, rule() {},
+    config: () => cfg, settings: () => settings, defineTool, onDispose() {}, rule() {},
     on: (name, fn) => hooks.set(name, fn), tool: fn => { tools = fn },
     lib: key => ({
       'chat/access': access,
       'onebot/client': { isDefiniteFailure: () => false },
     })[key],
     core: { hub: {
-      chatOfSession: id => id === 'first' ? chat.chatId : another.chatId,
-      turnSenders: () => [chat.userId],
+      chatOfSession: id => id === 'first' ? chat.chatId : id === 'guest' ? guestChat.chatId : another.chatId,
+      turnSenders: id => [id === 'guest' ? guestChat.userId : chat.userId],
       sendSegments: async (to, segments) => { deliveries.push({ to, segments }); return { message_id: 9 } },
     } },
   }, { fetchPosts, download: async (url, options) => {
@@ -380,4 +383,25 @@ test('on-demand tools require a real trigger, filter metadata, and send only the
   assert.equal(explicit.candidates[0].rating, 'e')
   cfg.ownerQQ = '99999'
   assert.match((await call(where, 'image_search', { rating: 'e' })).message, /只有机器人主人/)
+
+  cfg.ownerQQ = chat.userId
+  const guest = { chat: guestChat, level: 'social', sessionId: 'guest' }
+  assert.equal(tools(guest).length, 0)
+  assert.equal(tools({ ...guest, chat: privateChat(cfg.ownerQQ) }).length, 3)
+  settings.allowPrivateWhitelistSearch = true
+  assert.equal(tools({ ...guest, chat: privateChat('56789') }).length, 0)
+  trigger(guest, 'yande找图 rating:q 初音未来')
+  assert.match((await call(guest, 'image_search')).message, /只有机器人主人/)
+  trigger(guest, 'yande找图 初音未来')
+  const guestResult = await call(guest, 'image_search', { limit: 1 })
+  assert.equal(guestResult.candidates[0].rating, 's')
+  const guestSelection = { search_id: guestResult.search_id, ids: [4] }
+  const heldSend = tools(guest).find(tool => tool.name === 'image_send')
+  settings.allowPrivateWhitelistSearch = false
+  assert.equal((await heldSend.execute(guestSelection)).ok, false)
+  settings.allowPrivateWhitelistSearch = true
+  assert.equal((await call(guest, 'image_send', guestSelection)).ok, true)
+  assert.equal(deliveries.at(-1).to, guestChat.chatId)
+  cfg.allow.private = []
+  assert.equal(tools(guest).length, 0)
 })

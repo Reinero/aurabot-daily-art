@@ -246,6 +246,7 @@ const accountFields = [
   { key: 'konachanApiKey', label: 'Konachan API Key', type: 'password', hint: '留空使用公开接口。认证失败会自动回退。' },
 ]
 const proxyField = { key: 'konachanProxyUrl', label: '共用代理地址', type: 'password', placeholder: 'http://host.docker.internal:7890', hint: '两个图源的 API 和图片下载共用。未设置时直连。' }
+const searchAccessField = { key: 'allowPrivateWhitelistSearch', label: '允许私聊白名单用户按需找图', type: 'switch', hint: '开启后，Aurabot「系统 → 权限」的私聊白名单用户可用两个图源的 Safe 找图。' }
 const ratingLabels = { s: 'Safe（s）', q: 'Questionable（q）', e: 'Explicit（e）' }
 const scheduleFields = [
     { key: 'enabled', label: '开启定时推送', type: 'switch', hint: '开启后会向下方名单补发当天已错过的时段。' },
@@ -291,11 +292,11 @@ export function migrateYandereSettings(cfg) {
 export default {
   id: 'daily-art',
   name: '每日推图',
-  version: '2.0.0',
+  version: '2.1.0',
   api: 1,
   panel: 'panel.js',
   description: '在同一页管理 Konachan 和 Yande.re 定时推图及 QQ 按需找图。',
-  defaults: { ...scheduleDefaults, konachanUsername: '', konachanApiKey: '', konachanProxyUrl: '' },
+  defaults: { ...scheduleDefaults, konachanUsername: '', konachanApiKey: '', konachanProxyUrl: '', allowPrivateWhitelistSearch: false },
   setup(api) {
     const { registerSecretField } = api.lib('core/config')
     for (const field of [proxyField, ...accountFields]) {
@@ -313,7 +314,7 @@ export default {
     registerImageTools(api)
     const shutdown = new AbortController()
     api.onDispose(() => shutdown.abort())
-    api.route('/settings-schema', () => ({ ok: true, proxyField, accountFields, scheduleFields, scheduleDefaults,
+    api.route('/settings-schema', () => ({ ok: true, proxyField, searchAccessField, accountFields, scheduleFields, scheduleDefaults,
       ratings: Object.fromEntries(Object.entries(booruSources).map(([id, site]) => [id, site.ratings.map(value => ({ value, label: ratingLabels[value] }))])),
     }))
     let probeBusy = false
