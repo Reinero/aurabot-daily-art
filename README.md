@@ -1,6 +1,6 @@
 # daily-art · 每日推图
 
-适用于 [Aurabot QQ](https://github.com/aureth-labs/dsh-aurabot-qq) 的 Konachan 推图模块。支持白名单定时推送和 QQ 会话按需找图。定时任务每天北京时间 09:00、17:00 各选 5 张图，不消耗模型 token。按需找图由当前会话的 Agent 理解需求，模块负责查询、筛选、下载和发送。
+适用于 [Aurabot QQ](https://github.com/aureth-labs/dsh-aurabot-qq) 的 Konachan 推图模块。支持白名单定时推送和 QQ 会话按需找图。定时任务可设置推送时间和张数，不消耗模型 token。按需找图由当前会话的 Agent 理解需求，模块负责查询、筛选、下载和发送。
 
 ## 安装
 
@@ -21,7 +21,7 @@ git clone https://github.com/Reinero/aurabot-daily-art.git (Join-Path $moduleRoo
 名单独立于 Aurabot 的聊天权限，默认留空，不会从聊天权限自动导入。号码每行一个，也可用逗号分隔。主人私聊若要接收，也要填入私聊推送白名单。
 批次建立时确定接收名单，之后加入的目标从新批次开始接收。发送或重试前会重新检查名单，已移除的目标不发送。
 
-北京时间每天 09:00、17:00 各发一批，每批含 5 张新图。启动时补发当天已错过的批次，跨日不追发。
+「每日推送时间」使用北京时间和 24 小时制，如 `08:30`、`19:15`。每行填一个时间，也可用逗号分隔。默认每天 09:00、17:00 各发一批。每批可选 1–10 张，默认 5 张。启动或保存后会补发当天已过时点但尚未发送的批次，跨日不追发。改张数时，已选图的批次继续使用原张数。
 每个时段使用同一批图片，逐个向白名单目标发送。网关明确失败时约 5 分钟后重试未收到的目标；网关回执不明时跳过重发。
 总开关关闭或处于试运行时，任务不发送，也不消费当天的批次。
 
@@ -36,7 +36,7 @@ git clone https://github.com/Reinero/aurabot-daily-art.git (Join-Path $moduleRoo
 | 排序 | 按新旧、评分或分辨率选图。默认最新优先。 |
 | 高级筛选 | 接受 `id`、`width`、`height`、`mpixels`、`ratio`、`date`、`parent`、`user`、`source`、`md5`、`vote`。如 `ratio:16:9 mpixels:2.5..`。使用空格或换行分隔。高级宽高条件与相应的最小宽高只能选一种。 |
 
-高级条件由 [Konachan API](https://konachan.net/help/cheatsheet) 执行。新筛选用于尚未选图的批次，已选好的批次仍按原记录补发。凑不齐 5 张时，模块记录原因并稍后重试。
+高级条件由 [Konachan API](https://konachan.net/help/cheatsheet) 执行。新筛选用于尚未选图的批次，已选好的批次仍按原记录补发。凑不齐设定张数时，模块记录原因并稍后重试。
 
 ## 图源、凭据和代理
 

@@ -1,8 +1,8 @@
 {
   "id": "daily-art",
   "name": "每日推图",
-  "version": "1.5.2",
-  "description": "每天北京时间 09:00 和 17:00 定时推图，支持 QQ 会话按需找图。",
+  "version": "1.6.0",
+  "description": "按北京时间定时推图，可设置时间和张数，也支持 QQ 会话按需找图。",
   "category": "social",
   "tags": ["图片", "定时", "Konachan"],
   "license": "MIT",

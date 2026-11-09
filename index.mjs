@@ -3,14 +3,28 @@ import { downloadKonachanImage, konachanCredentials, probeKonachan, selectKonach
 import { registerImageTools } from './image-tools.mjs'
 import { konachanProxy, validateKonachanProxy } from './transport.mjs'
 
-const time = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23' })
-const hours = [9, 17]
-const count = 5
+const time = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+const defaultTimes = '09:00\n17:00'
+const defaultCount = 5
+const maxCount = 10
 const retryMs = 5 * 60_000
 
 function clock(now) {
   const parts = Object.fromEntries(time.formatToParts(now).map(({ type, value }) => [type, value]))
-  return { day: `${parts.year}-${parts.month}-${parts.day}`, hour: Number(parts.hour) }
+  return { day: `${parts.year}-${parts.month}-${parts.day}`, timeOfDay: `${parts.hour}:${parts.minute}` }
+}
+
+function pushSchedule(settings) {
+  const times = String(settings.pushTimes ?? '').trim() || defaultTimes
+  const labels = new Set()
+  for (const value of times.split(/[\s,，;；]+/).filter(Boolean)) {
+    if (!/^(?:[01]?\d|2[0-3]):[0-5]\d$/.test(value)) throw new Error('推送时间请使用 24 小时制 HH:mm，例如 09:30')
+    labels.add(value.padStart(5, '0'))
+  }
+  if (!labels.size) throw new Error('请至少填写一个推送时间')
+  const count = settings.pushCount === '' ? defaultCount : settings.pushCount ?? defaultCount
+  if (!Number.isInteger(count) || count < 1 || count > maxCount) throw new Error(`每批图片数须为 1–${maxCount} 的整数`)
+  return { labels: [...labels].sort(), count }
 }
 
 function qqNumbers(input) {
@@ -66,34 +80,41 @@ export function startDailyArt(api, { now = Date.now, select = selectKonachan, do
   const retryAt = new Map()
   let running = false
   let lastDay = ''
+  let lastScheduleError = ''
 
   function canSend(day) {
     const cfg = api.config()
     return !shutdown.signal.aborted && clock(now()).day === day && api.settings().enabled === true && cfg.enabled && !cfg.dryRun
   }
 
-  async function deliver(day, hour, slot, proxyUrl) {
+  function slotIsCurrent(day, label, proxyUrl) {
+    const settings = api.settings()
+    if (!canSend(day) || konachanProxy(settings) !== proxyUrl) return false
+    try { return pushSchedule(settings).labels.includes(label) } catch { return false }
+  }
+
+  async function deliver(day, label, slotKey, slot, proxyUrl) {
     const signal = AbortSignal.any([shutdown.signal, AbortSignal.timeout(20_000)])
     const segments = await Promise.all(slot.images.map(async ({ url }) => {
       const bytes = await download(url, { proxyUrl, signal, log: api.log, operation: 'scheduled' })
       return { type: 'image', data: { file: `base64://${bytes.toString('base64')}` } }
     }))
     for (const chatId of Object.keys(slot.recipients)) {
-      if (!canSend(day) || konachanProxy(api.settings()) !== proxyUrl) return
+      if (!slotIsCurrent(day, label, proxyUrl)) return
       if (!targets(api.settings()).has(chatId)) continue
       const state = readState(file, day)
-      const recipient = state.slots[hour]?.recipients[chatId]
+      const recipient = state.slots[slotKey]?.recipients[chatId]
       if (recipient !== 'pending') continue
 
       // 先落盘。进程若在网关回执前中断，保留 sending，避免重启后发第二遍。
-      state.slots[hour].recipients[chatId] = 'sending'
+      state.slots[slotKey].recipients[chatId] = 'sending'
       writeState(file, state)
       let status = 'pending'
       try {
-        const result = await api.core.hub.sendSegments(chatId, segments, `[每日推图 ${day} ${hour}:00]`, {
+        const result = await api.core.hub.sendSegments(chatId, segments, `[每日推图 ${day} ${label}]`, {
           throwOnError: true,
           timeoutMs: 60_000,
-          isCurrent: () => canSend(day) && konachanProxy(api.settings()) === proxyUrl && targets(api.settings()).has(chatId),
+          isCurrent: () => slotIsCurrent(day, label, proxyUrl) && targets(api.settings()).has(chatId),
         })
         if (result?.message_id != null) status = 'sent'
         else if (result != null) status = 'uncertain'
@@ -101,65 +122,78 @@ export function startDailyArt(api, { now = Date.now, select = selectKonachan, do
         const definitelyFailed = !error.uncertain && !/超时|timeout|timed?\s*out/i.test(error.message) &&
           (error.transport || error.data?.status === 'failed' || Number(error.data?.retcode || 0) !== 0)
         if (!definitelyFailed) status = 'uncertain'
-        api.log.warn(`${hour}:00 → ${chatId}：${error.message}${status === 'uncertain' ? '（结果不明，跳过重发）' : '（稍后重试）'}`)
+        api.log.warn(`${label} → ${chatId}：${error.message}${status === 'uncertain' ? '（结果不明，跳过重发）' : '（稍后重试）'}`)
       }
 
       // 等回执时可能热重载或跨日，合并进最新记录，不能覆盖另一轮的进度。
       const current = readState(file, clock(now()).day)
-      if (current.day === day && current.slots[hour]?.recipients[chatId] === 'sending') {
-        current.slots[hour].recipients[chatId] = status
+      if (current.day === day && current.slots[slotKey]?.recipients[chatId] === 'sending') {
+        current.slots[slotKey].recipients[chatId] = status
         writeState(file, current)
       }
-      if (status === 'sent') api.log.info(`${hour}:00 → ${chatId}：已推送 ${count} 张图片`)
+      if (status === 'sent') api.log.info(`${label} → ${chatId}：已推送 ${slot.images.length} 张图片`)
     }
   }
 
   async function tick() {
-    const { day, hour: currentHour } = clock(now())
+    const { day, timeOfDay } = clock(now())
     if (running || !canSend(day)) return
+    let schedule
+    try {
+      schedule = pushSchedule(api.settings())
+      lastScheduleError = ''
+    } catch (error) {
+      if (lastScheduleError !== error.message) api.log.warn(error.message)
+      lastScheduleError = error.message
+      return
+    }
     running = true
     try {
       if (lastDay !== day) { retryAt.clear(); lastDay = day }
-      for (const hour of hours) {
-        if (currentHour < hour || !canSend(day)) break
-        if (now() < (retryAt.get(hour) || 0)) continue
+      for (const label of schedule.labels) {
+        if (timeOfDay < label || !canSend(day)) break
+        // 整点沿用旧版的数字键，升级不会重发已经送达的批次。
+        const slotKey = label.endsWith(':00') ? String(Number(label.slice(0, 2))) : label
+        if (now() < (retryAt.get(slotKey) || 0)) continue
         const settings = api.settings()
         const proxyUrl = konachanProxy(settings)
+        if (!slotIsCurrent(day, label, proxyUrl)) continue
         const eligible = targets(settings)
         if (!eligible.size) continue
         const state = readState(file, day)
-        let slot = state.slots[hour]
+        let slot = state.slots[slotKey]
         if (slot && ![...eligible].some(id => slot.recipients[id] === 'pending')) continue
-        retryAt.set(hour, now() + retryMs)
+        retryAt.set(slotKey, now() + retryMs)
         try {
           if (!slot) {
             const filters = pushFilters(settings)
             const credentials = konachanCredentials(settings)
+            const { count } = pushSchedule(settings)
             const images = await select(new Set(state.used), count, { signal: shutdown.signal, filters, credentials, proxyUrl, log: api.log, operation: 'scheduled' })
-            if (!canSend(day)) break
+            if (!slotIsCurrent(day, label, proxyUrl)) continue
             const latest = api.settings()
             const latestCredentials = konachanCredentials(latest)
-            if (proxyUrl !== konachanProxy(latest) || JSON.stringify(filters) !== JSON.stringify(pushFilters(latest)) ||
+            if (count !== pushSchedule(latest).count || JSON.stringify(filters) !== JSON.stringify(pushFilters(latest)) ||
               credentials.username !== latestCredentials.username || credentials.apiKey !== latestCredentials.apiKey) {
-              retryAt.delete(hour)
+              retryAt.delete(slotKey)
               continue
             }
             const recipients = [...targets(latest)]
             if (!recipients.length) continue
             const current = readState(file, day)
-            slot = current.slots[hour]
+            slot = current.slots[slotKey]
             if (!slot) {
               const used = new Set(current.used)
               if (images.some(({ key }) => used.has(key))) continue
               slot = { images, recipients: Object.fromEntries(recipients.map(id => [id, 'pending'])) }
-              current.slots[hour] = slot
+              current.slots[slotKey] = slot
               current.used.push(...images.map(({ key }) => key))
               writeState(file, current)
             }
           }
-          await deliver(day, hour, slot, proxyUrl)
+          await deliver(day, label, slotKey, slot, proxyUrl)
         } catch (error) {
-          if (!shutdown.signal.aborted) api.log.warn(`${hour}:00 推送未完成，稍后重试：${error.message}`)
+          if (!shutdown.signal.aborted) api.log.warn(`${label} 推送未完成，稍后重试：${error.message}`)
         }
       }
     } finally { running = false }
@@ -174,17 +208,20 @@ export function startDailyArt(api, { now = Date.now, select = selectKonachan, do
 export default {
   id: 'daily-art',
   name: '每日推图',
-  version: '1.5.2',
+  version: '1.6.0',
   api: 1,
   panel: 'panel.js',
-  description: '每天北京时间 09:00 和 17:00 定时推图，支持 QQ 会话按需找图。',
+  description: '按北京时间定时推图，可设置时间和张数，也支持 QQ 会话按需找图。',
   defaults: {
     enabled: false, groupWhitelist: '', privateWhitelist: '', konachanUsername: '', konachanApiKey: '', konachanProxyUrl: '',
+    pushTimes: defaultTimes, pushCount: defaultCount,
     pushMinScore: 31, pushMaxScore: '', pushTags: '', pushExcludeTags: '', pushRating: 's',
     pushMinWidth: 0, pushMinHeight: 0, pushOrientation: 'any', pushSort: 'newest', pushAdvanced: '',
   },
   settings: [
     { key: 'enabled', label: '开启定时推送', type: 'switch', hint: '开启后会向下方名单补发当天已错过的时段。' },
+    { key: 'pushTimes', label: '每日推送时间（北京时间）', type: 'textarea', placeholder: defaultTimes, hint: '24 小时制 HH:mm。每行一个，也可用逗号分隔。留空使用 09:00、17:00。' },
+    { key: 'pushCount', label: '每批图片数', type: 'number', min: 1, max: maxCount, hint: '每个推送时间发送的张数。留空使用 5 张。' },
     { key: 'groupWhitelist', label: '群聊推送白名单', type: 'textarea', hint: '填 QQ 群号，每行一个，也可用逗号分隔。留空时不推送到群聊。' },
     { key: 'privateWhitelist', label: '私聊推送白名单', type: 'textarea', hint: '填接收推送的 QQ 号，每行一个，也可用逗号分隔。主人也需填写。' },
     { key: 'konachanUsername', label: 'Konachan 用户名', type: 'text', hint: '使用个人 API Key 时填写 Konachan 账号用户名。' },
