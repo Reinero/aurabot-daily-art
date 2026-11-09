@@ -1,7 +1,6 @@
-import { requestKonachan, validateKonachanProxy } from './transport.mjs'
+import { booruSources, requestKonachan, validateKonachanProxy } from './transport.mjs'
 import { requestAudit } from './diagnostics.mjs'
 
-const origin = 'https://konachan.net'
 const pageSize = 100
 const maxImageBytes = 4 * 1024 * 1024
 const imageTypes = new Set(['image/jpeg', 'image/png', 'image/webp'])
@@ -75,7 +74,9 @@ async function requestWithFallback(site, path, query, options = {}) {
 }
 
 function listReader(options = {}) {
-  let credentials = options.credentials
+  const source = options.source || 'konachan'
+  const { origin } = booruSources[source]
+  let credentials = source === 'konachan' ? options.credentials : undefined
   return async (path, query) => {
     const { items, fallbackReason } = await requestWithFallback(origin, path, query, { ...options, credentials })
     if (fallbackReason) credentials = undefined // 同一次分页查询后续直接用公开接口。
@@ -84,15 +85,17 @@ function listReader(options = {}) {
 }
 
 export async function probeKonachan(credentials, options) {
-  return Promise.all([origin, 'https://konachan.com'].map(async site => {
+  const source = options?.source || 'konachan'
+  const { origin, probe } = booruSources[source]
+  return Promise.all(probe.map(async site => {
     const host = new URL(site).hostname
     try {
       const checkImage = options?.checkImage && site === origin
-      const { items, fallbackReason } = await requestWithFallback(site, '/post.json', { limit: checkImage ? 5 : 1, tags: 'rating:s' }, { ...options, credentials })
+      const { items, fallbackReason } = await requestWithFallback(site, '/post.json', { limit: checkImage ? 5 : 1, tags: 'rating:s' }, { ...options, credentials: source === 'konachan' ? credentials : undefined })
       const result = { host, ok: true, message: `作品列表可读，返回 ${items.length} 条` }
       if (fallbackReason) result.fallbackReason = fallbackReason
       if (checkImage) {
-        const sample = items.filter(item => item?.rating === 's').map(imageUrl).find(Boolean)
+        const sample = items.filter(item => item?.rating === 's').map(item => imageUrl(item, source)).find(Boolean)
         try {
           if (!sample) throw new Error('列表中没有可下载的安全样图')
           const bytes = await downloadKonachanImage(sample, options)
@@ -106,20 +109,22 @@ export async function probeKonachan(credentials, options) {
   }))
 }
 
-function imageUrl(post) {
+function imageUrl(post, source) {
+  const { origin, images } = booruSources[source]
   for (const [candidate, size] of [[post.sample_url, post.sample_file_size], [post.jpeg_url, post.jpeg_file_size], [post.file_url, post.file_size]]) {
     if (size > maxImageBytes) continue
     if (!candidate) continue
     try {
       const url = new URL(candidate, origin)
-      if (url.origin === origin && !url.username && !url.password && /\.(?:jpe?g|png|webp)$/i.test(url.pathname)) return url.href
+      if (images.includes(url.origin) && !url.username && !url.password && /\.(?:jpe?g|png|webp)$/i.test(url.pathname)) return url.href
     } catch { /* 忽略无效图片地址 */ }
   }
   return null
 }
 
-export async function downloadKonachanImage(value, { proxyUrl = '', signal, fetchImage = requestKonachan, log, operation, trace = false } = {}) {
-  const url = imageUrl({ file_url: value })
+export async function downloadKonachanImage(value, { source = 'konachan', proxyUrl = '', signal, fetchImage = requestKonachan, log, operation, trace = false } = {}) {
+  const url = imageUrl({ file_url: value }, source)
+  const { name } = booruSources[source]
   if (!url) throw new Error('图片地址无效')
   validateKonachanProxy(proxyUrl)
   const timeout = AbortSignal.timeout(20_000)
@@ -133,18 +138,18 @@ export async function downloadKonachanImage(value, { proxyUrl = '', signal, fetc
   if (response.headers.get('cf-mitigated') === 'challenge') {
     audit('warn', 'cloudflare-challenge', response)
     await response.body?.cancel().catch(() => {})
-    throw new Error(`Konachan 图片下载要求 Cloudflare 验证（HTTP ${response.status}）`)
+    throw new Error(`${name} 图片下载要求 Cloudflare 验证（HTTP ${response.status}）`)
   }
   const type = response.headers.get('content-type')?.split(';')[0].trim().toLowerCase()
   if (!response.ok || !imageTypes.has(type) || Number(response.headers.get('content-length')) > maxImageBytes || !response.body) {
     await response.body?.cancel().catch(() => {})
     if (!response.ok) {
       audit('warn', 'http-error', response)
-      throw new Error(`Konachan 图片下载返回 HTTP ${response.status}`)
+      throw new Error(`${name} 图片下载返回 HTTP ${response.status}`)
     }
     if (!imageTypes.has(type) || !response.body) {
       audit('warn', 'invalid-image', response)
-      throw new Error('Konachan 没有返回支持的图片格式')
+      throw new Error(`${name} 没有返回支持的图片格式`)
     }
     audit('warn', 'image-too-large', response)
     throw new Error('图片超过 4 MB')
@@ -159,11 +164,11 @@ export async function downloadKonachanImage(value, { proxyUrl = '', signal, fetc
     }
   } catch (error) {
     audit('warn', timeout.aborted ? 'timeout' : 'image-read-error', response, error)
-    throw new Error('读取 Konachan 图片失败或超时')
+    throw new Error(`读取 ${name} 图片失败或超时`)
   }
   if (bytes > maxImageBytes || !bytes) {
     audit('warn', bytes ? 'image-too-large' : 'empty-image', response)
-    throw new Error(bytes ? '图片超过 4 MB' : 'Konachan 返回了空图片')
+    throw new Error(bytes ? '图片超过 4 MB' : `${name} 返回了空图片`)
   }
   if (trace) audit('info', 'ok', response)
   return Buffer.concat(chunks)
@@ -171,28 +176,29 @@ export async function downloadKonachanImage(value, { proxyUrl = '', signal, fetc
 
 // 来源接口统一返回 { key, url }，后续来源可用自己的 ID 前缀。
 export async function selectKonachan(excluded, count, { filters = {}, ...options } = {}) {
-  const { query, matches } = postCriteria({ min_score: 31, ...filters })
+  const source = options.source || 'konachan'
+  const { query, matches } = postCriteria({ min_score: 31, ...filters }, source)
   const list = listReader(options)
   const images = new Map()
   for (let page = 1; page <= 20; page++) {
     const posts = await list('/post.json', { tags: query, limit: pageSize, page })
     for (const post of posts) {
       if (!matches(post)) continue
-      const key = `konachan:${post.id}`
+      const key = `${source}:${post.id}`
       if (excluded.has(key) || images.has(key)) continue
-      const src = imageUrl(post)
+      const src = imageUrl(post, source)
       if (!src) continue
       images.set(key, { key, url: src })
       if (images.size === count) return [...images.values()]
     }
     if (posts.length === 0) break
   }
-  throw new Error(`Konachan 未找到足够的合格新图（需要 ${count} 张，找到 ${images.size} 张），可放宽推送筛选条件`)
+  throw new Error(`${booruSources[source].name} 未找到足够的合格新图（需要 ${count} 张，找到 ${images.size} 张），可放宽推送筛选条件`)
 }
 
 function tag(value) {
   const name = String(value ?? '').trim().toLowerCase().replace(/\s+/g, '_')
-  if (!tagPattern.test(name)) throw new Error('请使用 Konachan 的英文标签名，例如 hatsune_miku')
+  if (!tagPattern.test(name)) throw new Error('请使用图源的英文标签名，例如 hatsune_miku')
   return name
 }
 
@@ -232,7 +238,7 @@ function advancedTerms(text, reserved) {
   return terms
 }
 
-function postCriteria(args) {
+function postCriteria(args, source) {
   const { min_score, max_score, min_width = 0, min_height = 0, orientation = 'any', sort = 'newest', rating = 's', advanced } = args
   const include = tags(args.tags ?? [])
   const exclude = tags(args.exclude_tags ?? [])
@@ -240,7 +246,7 @@ function postCriteria(args) {
     throw new Error('评分上下限须为整数，且下限不能大于上限')
   }
   if (![min_width, min_height].every(n => Number.isSafeInteger(n) && n >= 0)) throw new Error('尺寸下限须为非负整数')
-  if (rating !== 's') throw new Error('Konachan 安全站点只支持 Safe（s）分级')
+  if (rating !== 's') throw new Error(`${booruSources[source].name} 推图只支持 Safe（s）分级`)
   if (!Object.hasOwn(orders, sort) || !['any', 'landscape', 'portrait', 'square'].includes(orientation)) throw new Error('不支持的排序或画幅')
   if (include.some(t => exclude.includes(t))) throw new Error('同一个标签不能同时包含和排除')
   const query = [...include, ...exclude.map(t => `-${t}`), `rating:${rating}`]
@@ -265,11 +271,13 @@ function postCriteria(args) {
 }
 
 export async function searchKonachan(args, options) {
+  const source = options?.source || 'konachan'
+  const { origin } = booruSources[source]
   const { min_score = 0, limit = 8 } = args
   if (!Number.isSafeInteger(min_score) || min_score < 0 || !Number.isInteger(limit) || limit < 1 || limit > 12) {
     throw new Error('评分下限须为非负整数，候选数量须在 1–12 之间')
   }
-  const { query, matches } = postCriteria({ ...args, min_score })
+  const { query, matches } = postCriteria({ ...args, min_score }, source)
   const list = listReader(options)
   const found = new Map()
   for (let page = 1; page <= 3; page++) {
@@ -278,7 +286,7 @@ export async function searchKonachan(args, options) {
     for (const p of posts) {
       if (!matches(p, true)) continue
       const postTags = String(p.tags ?? '').split(/\s+/).filter(t => tagPattern.test(t))
-      const url = imageUrl(p)
+      const url = imageUrl(p, source)
       if (!url || found.has(p.id)) continue
       found.set(p.id, { id: p.id, score: p.score, width: p.width, height: p.height, tags: postTags.slice(0, 25), post_url: `${origin}/post/show/${p.id}`, url })
       if (found.size === limit) return [...found.values()]

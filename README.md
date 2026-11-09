@@ -1,6 +1,6 @@
 # daily-art · 每日推图
 
-适用于 [Aurabot QQ](https://github.com/aureth-labs/dsh-aurabot-qq) 的 Konachan 推图模块。支持白名单定时推送和 QQ 会话按需找图。定时任务可设置推送时间和张数，不消耗模型 token。按需找图由当前会话的 Agent 理解需求，模块负责查询、筛选、下载和发送。
+适用于 [Aurabot QQ](https://github.com/aureth-labs/dsh-aurabot-qq) 的 Konachan 和 Yande.re 推图模块。支持白名单定时推送和 QQ 会话按需找图。定时任务可设置推送时间和张数，不消耗模型 token。按需找图由当前会话的 Agent 理解需求，模块负责查询、筛选、下载和发送。
 
 ## 安装
 
@@ -14,6 +14,8 @@ git clone https://github.com/Reinero/aurabot-daily-art.git (Join-Path $moduleRoo
 ```
 
 如果 Aurabot 使用自定义数据目录，请把 `$moduleRoot` 换成该目录下的 `modules`。Docker 部署时，把模块复制到 **Aurabot 容器**对应的数据卷，确保服务运行用户可读写该目录。加载后可在 Aurabot 的「系统 → 每日推图」配置。
+
+需要 Yande.re 时，将仓库内的 `extras/daily-art-yandere` 复制到同一个 `modules` 目录，使其与 `daily-art` 并列。加载后打开「系统 → Yande.re 推图」，可分别保存定时、张数、白名单、筛选条件和代理，或点击「检测连接」。初次安装时，Yande.re 定时开关关闭，白名单为空。
 
 ## 定时推送
 
@@ -52,6 +54,7 @@ git clone https://github.com/Reinero/aurabot-daily-art.git (Join-Path $moduleRoo
 在「系统 → 日志」查看 `[Konachan]` 记录。连接检测、请求失败和公开接口回退会记录站点、阶段、HTTP 状态、耗时、代理模式及认证方式。Cloudflare 响应会附上 Ray ID（若返回），便于站点运营方查询对应事件。日志省略密钥、代理地址、查询参数和响应正文。
 
 批次和已使用的来源 ID 存在 Aurabot 数据目录的 `modules-data/daily-art/delivery.json`，重启后保留。移除记录会使历史图片重新进入候选。
+Yande.re 使用单独的 `modules-data/daily-art/delivery-yandere.json`，API 请求访问 `yande.re`，图片可能从 `files.yande.re` 下载。日志用 `[Yande.re]` 标记。
 
 ## 在 QQ 里按需找图
 
@@ -65,7 +68,7 @@ git clone https://github.com/Reinero/aurabot-daily-art.git (Join-Path $moduleRoo
 | `image_search` | 返回候选的作品 ID、评分、尺寸、标签和作品页。支持包含或排除标签、评分和尺寸下限、画幅，以及按最新、高分或分辨率排序。 |
 | `image_send` | 使用搜索批次的 `search_id` 和候选作品 ID，下载并向当前 QQ 会话发送最多 5 张图片。 |
 
-按需搜索也仅使用 Konachan 安全站点的作品。Agent 根据元数据挑选，图片由模块下载并交给 QQ 网关。
+安装配套模块后，发「yande找图 初音未来的横图」即可使用 Yande.re。分两步选图时继续用同一图源的关键词，例如「yande找图 发第 2 张」。两路图源均只选择 API 标记为 Safe（`s`）的作品。Agent 根据元数据挑选，图片由模块下载并交给 QQ 网关。
 
 ## 许可
 

@@ -21,6 +21,7 @@ export function requestAudit({ log, operation, stage, host, proxyUrl, authentica
     }
     const code = error?.cause?.code || error?.code || (error?.name === 'AbortError' ? 'ABORT_ERR' : '')
     if (typeof code === 'string' && /^[A-Z][A-Z0-9_]{1,48}$/.test(code)) record.errorCode = code
-    log[level](`[Konachan] ${JSON.stringify(record)}`)
+    const label = host === 'yande.re' || host === 'files.yande.re' ? 'Yande.re' : 'Konachan'
+    log[level](`[${label}] ${JSON.stringify(record)}`)
   }
 }

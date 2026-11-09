@@ -1,7 +1,7 @@
 import { readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { downloadKonachanImage, konachanCredentials, probeKonachan, selectKonachan } from './konachan.mjs'
 import { registerImageTools } from './image-tools.mjs'
-import { konachanProxy, validateKonachanProxy } from './transport.mjs'
+import { booruSources, konachanProxy, validateKonachanProxy, yandereProxy } from './transport.mjs'
 
 const time = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
 const defaultTimes = '09:00\n17:00'
@@ -74,8 +74,10 @@ function writeState(file, state) {
   renameSync(temp, file)
 }
 
-export function startDailyArt(api, { now = Date.now, select = selectKonachan, download = downloadKonachanImage } = {}) {
-  const file = api.dataDir('delivery.json')
+export function startDailyArt(api, { now = Date.now, select = selectKonachan, download = downloadKonachanImage, source = 'konachan' } = {}) {
+  const file = api.dataDir(source === 'konachan' ? 'delivery.json' : 'delivery-yandere.json')
+  const readProxy = source === 'konachan' ? konachanProxy : yandereProxy
+  const title = source === 'konachan' ? '每日推图' : `${booruSources[source].name} 推图`
   const shutdown = new AbortController()
   const retryAt = new Map()
   let running = false
@@ -89,14 +91,14 @@ export function startDailyArt(api, { now = Date.now, select = selectKonachan, do
 
   function slotIsCurrent(day, label, proxyUrl) {
     const settings = api.settings()
-    if (!canSend(day) || konachanProxy(settings) !== proxyUrl) return false
+    if (!canSend(day) || readProxy(settings) !== proxyUrl) return false
     try { return pushSchedule(settings).labels.includes(label) } catch { return false }
   }
 
   async function deliver(day, label, slotKey, slot, proxyUrl) {
     const signal = AbortSignal.any([shutdown.signal, AbortSignal.timeout(20_000)])
     const segments = await Promise.all(slot.images.map(async ({ url }) => {
-      const bytes = await download(url, { proxyUrl, signal, log: api.log, operation: 'scheduled' })
+      const bytes = await download(url, { source, proxyUrl, signal, log: api.log, operation: 'scheduled' })
       return { type: 'image', data: { file: `base64://${bytes.toString('base64')}` } }
     }))
     for (const chatId of Object.keys(slot.recipients)) {
@@ -111,7 +113,7 @@ export function startDailyArt(api, { now = Date.now, select = selectKonachan, do
       writeState(file, state)
       let status = 'pending'
       try {
-        const result = await api.core.hub.sendSegments(chatId, segments, `[每日推图 ${day} ${label}]`, {
+        const result = await api.core.hub.sendSegments(chatId, segments, `[${title} ${day} ${label}]`, {
           throwOnError: true,
           timeoutMs: 60_000,
           isCurrent: () => slotIsCurrent(day, label, proxyUrl) && targets(api.settings()).has(chatId),
@@ -156,7 +158,7 @@ export function startDailyArt(api, { now = Date.now, select = selectKonachan, do
         const slotKey = label.endsWith(':00') ? String(Number(label.slice(0, 2))) : label
         if (now() < (retryAt.get(slotKey) || 0)) continue
         const settings = api.settings()
-        const proxyUrl = konachanProxy(settings)
+        const proxyUrl = readProxy(settings)
         if (!slotIsCurrent(day, label, proxyUrl)) continue
         const eligible = targets(settings)
         if (!eligible.size) continue
@@ -169,7 +171,7 @@ export function startDailyArt(api, { now = Date.now, select = selectKonachan, do
             const filters = pushFilters(settings)
             const credentials = konachanCredentials(settings)
             const { count } = pushSchedule(settings)
-            const images = await select(new Set(state.used), count, { signal: shutdown.signal, filters, credentials, proxyUrl, log: api.log, operation: 'scheduled' })
+            const images = await select(new Set(state.used), count, { source, signal: shutdown.signal, filters, credentials, proxyUrl, log: api.log, operation: 'scheduled' })
             if (!slotIsCurrent(day, label, proxyUrl)) continue
             const latest = api.settings()
             const latestCredentials = konachanCredentials(latest)
@@ -201,14 +203,14 @@ export function startDailyArt(api, { now = Date.now, select = selectKonachan, do
 
   api.onDispose(() => shutdown.abort())
   api.later(0, tick)
-  api.every(15_000, tick, '每日推图')
+  api.every(15_000, tick, title)
   return tick
 }
 
 export default {
   id: 'daily-art',
   name: '每日推图',
-  version: '1.6.0',
+  version: '1.7.0',
   api: 1,
   panel: 'panel.js',
   description: '按北京时间定时推图，可设置时间和张数，也支持 QQ 会话按需找图。',
@@ -246,6 +248,7 @@ export default {
   ],
   setup(api) {
     startDailyArt(api)
+    startDailyArt({ ...api, settings: () => api.use('daily-art-yandere')?.settings() ?? {} }, { source: 'yandere' })
     registerImageTools(api)
     const shutdown = new AbortController()
     api.onDispose(() => shutdown.abort())
@@ -260,5 +263,15 @@ export default {
       const results = await probeKonachan(credentials, { signal: shutdown.signal, proxyUrl, checkImage: true, log: api.log, operation: 'connection-test', trace: true })
       return { ok: true, authenticatedRequest: Boolean(credentials.apiKey), proxyConfigured: Boolean(proxyUrl), results }
     })
+    return {
+      async probeYandere() {
+        const settings = api.use('daily-art-yandere')?.settings()
+        if (!settings) return { ok: false, message: '请启用 Yande.re 推图模块' }
+        const proxyUrl = yandereProxy(settings)
+        try { validateKonachanProxy(proxyUrl) } catch (error) { return { ok: false, message: error.message } }
+        const results = await probeKonachan({}, { source: 'yandere', proxyUrl, signal: shutdown.signal, checkImage: true, log: api.log, operation: 'connection-test', trace: true })
+        return { ok: true, proxyConfigured: Boolean(proxyUrl), results }
+      },
+    }
   },
 }
