@@ -43,4 +43,4 @@ jobs:
         env:
           AURABOT_PLUGIN_DIR: ${{ github.workspace }}/host
           DA_MARKET_DIST: ${{ github.workspace }}/market/dist
-        run: node --test 'test/*.test.js'
+        run: node --test 'test/*.test.mjs'

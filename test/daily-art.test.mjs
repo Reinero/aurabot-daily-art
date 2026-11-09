@@ -77,6 +77,11 @@ test('rejected Konachan credentials fall back once and the remaining pages use t
 })
 
 test('configured proxy receives CONNECT and a refused tunnel fails the request', async t => {
+  const [major, minor] = process.versions.node.split('.').map(Number)
+  if (major < 24 || (major === 24 && minor < 5)) {
+    await assert.rejects(requestKonachan('https://konachan.net/post.json', { proxyUrl: 'http://127.0.0.1:1' }), /需要 Node\.js 24\.5/)
+    return
+  }
   const server = createServer()
   const connects = []
   server.on('connect', (req, socket) => {

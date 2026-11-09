@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { test } from 'node:test'
+import { runInNewContext } from 'node:vm'
 
 const host = process.env.AURABOT_PLUGIN_DIR
 const live = process.env.DA_LIVE_SAFE === '1'
@@ -21,7 +22,7 @@ async function until(fn, timeout = 10000) {
   throw new Error('等待验收事件超时')
 }
 
-test('stock host installs, claims raw requests, pairs the owner and masks secrets across reloads', { skip: !host, timeout: 90000 }, async t => {
+test('stock host installs, groups the panel, claims raw requests and protects credentials across reloads', { skip: !host, timeout: 90000 }, async t => {
   const fromHost = path => import(pathToFileURL(resolve(host, path)).href)
   const { createFakeDsh } = await fromHost('test/helpers/fake-dsh.js')
   const { startMockOneBot } = await fromHost('test/helpers/mock-onebot.js')
@@ -79,7 +80,8 @@ test('stock host installs, claims raw requests, pairs the owner and masks secret
     await fake.call('/onebot/reconnect')
     await until(() => onebot.connected())
   }
-  const post = async (path, body) => (await fake.call(`/ext/daily-art${path}`, body, { 'content-type': 'application/json' })).json()
+  const post = async (path, body, peer = '127.0.0.1') => (await fake.call(`/ext/daily-art${path}`, body,
+    { 'content-type': 'application/json', origin: 'http://127.0.0.1:5099', 'sec-fetch-site': 'same-origin' }, peer)).json()
   const push = text => onebot.push({ message_type: 'private', sub_type: 'friend', user_id: Number(owner), message_id: sequence++, sender: { user_id: Number(owner), nickname: 'owner' }, message: [{ type: 'text', data: { text } }] })
   const sent = () => onebot.sent('send_private_msg').filter(call => String(call.params.user_id) === owner).flatMap(call => call.params.message)
   const imageCount = () => sent().filter(segment => segment.type === 'image').length
@@ -99,14 +101,21 @@ test('stock host installs, claims raw requests, pairs the owner and masks secret
     assert.equal(imageCount(), 0)
     return
   }
-  assert.equal((await post('/credentials', {})).ok, false)
+  const module = (await fake.call('/modules')).json().list.find(item => item.id === 'daily-art')
+  const client = readFileSync(resolve(host, 'client/client.js'), 'utf8')
+  const start = client.indexOf('const NAV_GROUPS =')
+  const end = client.indexOf('const navOrder =', start)
+  assert.ok(start >= 0 && end > start)
+  const groupOf = runInNewContext(client.slice(start, end) + '\nnavGroupOf')
+  assert.equal(groupOf({ id: `ext:${module.id}`, ext: module.id, label: module.name }).id, 'platform')
+  assert.ok(module.panel && !module.routes.some(route => route.endsWith('/pair')))
+  assert.equal((await post('/credentials', {}, '203.0.113.7')).ok, false)
   assert.equal(instance.getConfig().ext['daily-art'].konachanApiKey, undefined)
-  push('每日推图配对')
-  const code = await until(() => sent().map(segment => /[a-f0-9]{48}$/.exec(segment.data.text || '')?.[0]).find(Boolean))
-  const pair = await post('/pair', { code })
-  assert.equal(pair.ok, true)
-  assert.equal((await post('/pair', { code })).ok, false)
-  assert.equal((await post('/credentials', { token: pair.token, konachanApiKey: '' })).ok, true)
+  const vault = join(dir, 'modules-data', 'daily-art', 'credentials.json')
+  assert.equal(JSON.parse(readFileSync(vault, 'utf8')).konachanApiKey, 'legacy-fixture')
+  assert.equal((await post('/credentials', { konachanApiKey: 'new-fixture' })).konachanApiKeySet, true)
+  assert.equal(JSON.parse(readFileSync(vault, 'utf8')).konachanApiKey, 'new-fixture')
+  assert.equal((await post('/credentials', { konachanApiKey: '' })).konachanApiKeySet, false)
   push('konachan找图 风景')
   if (live) {
     await until(() => imageCount() === 1, 45000)
@@ -120,7 +129,7 @@ test('stock host installs, claims raw requests, pairs the owner and masks secret
   if (persistent) return
   fake.dispose()
   await boot()
-  assert.equal((await post('/credentials', { token: pair.token })).ok, false)
+  assert.equal((await post('/credentials', {})).konachanApiKeySet, false)
   assert.equal((await fake.call('/state')).json().config.ext['daily-art'].konachanApiKey, undefined)
   if (live) { await delay(2000); assert.equal(imageCount(), 2) }
   instance.setConfig({ ...instance.getConfig(), safeMode: true, modules: { ...instance.getConfig().modules, 'daily-art': { enabled: false } } })
