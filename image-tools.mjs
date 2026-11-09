@@ -45,27 +45,34 @@ export function registerImageTools(api, { fetchPosts, download = downloadKonacha
   api.rule(guidance)
   api.on('message', msg => {
     const source = triggerSource(msg.text)
-    if (!allowed(msg) || msg.atOthers || !source) return
+    if (!allowed(msg) || msg.atOthers || !source || !msg.messageId || String(msg.messageId) === '0') return
     const now = Date.now()
     for (const [id, entry] of triggers) if (entry.expires <= now) triggers.delete(id)
     const rating = explicitRating(msg.text)
-    triggers.set(msg.chatId, { source, rating, sender: String(msg.userId), expires: now + ttl, previewOnly: previewOnly.test(msg.text) })
+    triggers.set(`${msg.chatId}/${msg.messageId}`, { source, rating, sender: String(msg.userId), expires: now + ttl, previewOnly: previewOnly.test(msg.text) })
   })
   api.on('group/decide', (decision, { msg }) => {
     if (allowed(msg) && !msg.atOthers && triggerSource(msg.text)) return { ...decision, reply: true, mode: 'must', reason: '明确触发图源搜索' }
   })
-  api.on('prompt', (_content, { chat, sessionId, senderId, extraSenders = [], queryText }) => {
+  api.on('prompt', (_content, { chat, sessionId, sourceMessages = [] }) => {
     // prompt 使用完整 ID，挂载工具时 Hub 会去掉 session- 前缀。
     const key = String(sessionId).replace(/^session-/, '')
     const previous = sessions.get(key)
-    const explicit = triggers.get(chat.chatId)
     const now = Date.now()
-    if (!explicit || explicit.expires <= now || ![senderId, ...extraSenders].map(String).includes(explicit.sender) ||
-      !allowed(chat) || !String(queryText || '').split('\n').some(line => triggerSource(line) === explicit.source)) {
+    const matches = []
+    for (const message of sourceMessages) {
+      const triggerKey = `${chat.chatId}/${message.messageId}`
+      const entry = triggers.get(triggerKey)
+      if (!entry || entry.expires <= now || entry.sender !== String(message.senderId)) continue
+      triggers.delete(triggerKey)
+      matches.push(entry)
+    }
+    const explicit = matches.at(-1)
+    if (!explicit || !allowed(chat) || matches.some(entry => entry.source !== explicit.source || entry.rating !== explicit.rating ||
+      entry.sender !== explicit.sender || entry.previewOnly !== explicit.previewOnly)) {
       if (previous) previous.request = null
       return
     }
-    triggers.delete(chat.chatId)
     for (const [id, entry] of sessions) if (entry.expires <= now) sessions.delete(id)
     const { source, rating, sender, previewOnly: onlyPreview } = explicit
     const search = previous?.search?.source === source && previous.search.rating === rating && previous.expires > now ? previous.search : null

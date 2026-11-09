@@ -22,6 +22,7 @@ export function konachanCredentials(settings) {
 }
 
 class KonachanAuthError extends Error {}
+export class PermanentImageError extends Error {}
 
 async function requestList(site, path, query, { fetchPosts = requestKonachan, signal, credentials, proxyUrl = '', log, operation, fallback, trace = false } = {}) {
   validateKonachanProxy(proxyUrl)
@@ -135,7 +136,7 @@ function imageUrl(post, source) {
 export async function downloadKonachanImage(value, { source = 'konachan', proxyUrl = '', signal, fetchImage = requestKonachan, log, operation, trace = false } = {}) {
   const url = imageUrl({ file_url: value }, source)
   const { name } = booruSources[source]
-  if (!url) throw new Error('图片地址无效')
+  if (!url) throw new PermanentImageError('图片地址无效')
   validateKonachanProxy(proxyUrl)
   const timeout = AbortSignal.timeout(20_000)
   const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout
@@ -155,14 +156,15 @@ export async function downloadKonachanImage(value, { source = 'konachan', proxyU
     await response.body?.cancel().catch(() => {})
     if (!response.ok) {
       audit('warn', 'http-error', response)
-      throw new Error(`${name} 图片下载返回 HTTP ${response.status}`)
+      const ErrorType = [404, 410].includes(response.status) ? PermanentImageError : Error
+      throw new ErrorType(`${name} 图片下载返回 HTTP ${response.status}`)
     }
     if (!imageTypes.has(type) || !response.body) {
       audit('warn', 'invalid-image', response)
-      throw new Error(`${name} 没有返回支持的图片格式`)
+      throw new PermanentImageError(`${name} 没有返回支持的图片格式`)
     }
     audit('warn', 'image-too-large', response)
-    throw new Error('图片超过 4 MB')
+    throw new PermanentImageError('图片超过 4 MB')
   }
   const chunks = []
   let bytes = 0
@@ -178,7 +180,7 @@ export async function downloadKonachanImage(value, { source = 'konachan', proxyU
   }
   if (bytes > maxImageBytes || !bytes) {
     audit('warn', bytes ? 'image-too-large' : 'empty-image', response)
-    throw new Error(bytes ? '图片超过 4 MB' : `${name} 返回了空图片`)
+    throw new PermanentImageError(bytes ? '图片超过 4 MB' : `${name} 返回了空图片`)
   }
   if (trace) audit('info', 'ok', response)
   return Buffer.concat(chunks)

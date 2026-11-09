@@ -1,7 +1,7 @@
 {
   "id": "daily-art",
   "name": "每日推图",
-  "version": "1.9.0",
+  "version": "2.0.0",
   "description": "在同一页管理 Konachan 和 Yande.re 定时推图及 QQ 按需找图。",
   "category": "social",
   "tags": ["图片", "定时", "Konachan"],

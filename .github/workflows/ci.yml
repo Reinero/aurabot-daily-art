@@ -1,0 +1,40 @@
+name: Daily Art checks
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: aureth-labs/dsh-aurabot-qq
+          ref: a41519c0da82916ae3b374f4df71a09975883e45
+          path: host
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Apply the published compatibility patch
+        working-directory: host
+        run: |
+          git apply --check ../compat/aurabot-host.patch
+          git apply ../compat/aurabot-host.patch
+      - name: Install the module and regression tests
+        run: |
+          mkdir -p host/modules/daily-art
+          cp LICENSE README.md module.json index.mjs konachan.mjs image-tools.mjs diagnostics.mjs transport.mjs panel.js host/modules/daily-art/
+          cp test/daily-art.test.js test/daily-art-host.test.js host/test/
+      - name: Run host and module tests
+        working-directory: host
+        run: node --test --test-reporter=dot 'test/**/*.test.js'

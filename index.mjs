@@ -1,5 +1,5 @@
 import { readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { downloadKonachanImage, konachanCredentials, probeKonachan, ratingSelection, selectKonachan } from './konachan.mjs'
+import { downloadKonachanImage, konachanCredentials, PermanentImageError, probeKonachan, ratingSelection, selectKonachan } from './konachan.mjs'
 import { registerImageTools } from './image-tools.mjs'
 import { booruSources, konachanProxy, validateKonachanProxy } from './transport.mjs'
 
@@ -101,10 +101,33 @@ export function startDailyArt(api, { now = Date.now, select = selectKonachan, do
     const rating = slot.rating ?? 's'
     if (!slotIsCurrent(day, label, proxyUrl, rating)) return
     const signal = AbortSignal.any([shutdown.signal, AbortSignal.timeout(20_000)])
-    const segments = await Promise.all(slot.images.map(async ({ url }) => {
+    const downloads = await Promise.allSettled(slot.images.map(async ({ url }) => {
       const bytes = await download(url, { source, proxyUrl, signal, log: api.log, operation: 'scheduled' })
       return { type: 'image', data: { file: `base64://${bytes.toString('base64')}` } }
     }))
+    const broken = downloads.flatMap((result, i) => result.status === 'rejected' && result.reason instanceof PermanentImageError ? [i] : [])
+    if (broken.length && slotIsCurrent(day, label, proxyUrl, rating)) {
+      const settings = api.settings()
+      const before = readState(file, day)
+      const replacement = await select(new Set(before.used), broken.length, {
+        source, signal: shutdown.signal, filters: slot.filters ?? pushFilters(settings, source), credentials: konachanCredentials(settings),
+        proxyUrl, log: api.log, operation: 'scheduled-repair',
+      })
+      if (!slotIsCurrent(day, label, proxyUrl, rating)) return
+      const current = readState(file, day)
+      const batch = current.slots[slotKey]
+      const used = new Set(current.used)
+      if (!batch || JSON.stringify(batch.images) !== JSON.stringify(slot.images) || replacement.length !== broken.length ||
+        new Set(replacement.map(image => image.key)).size !== broken.length || replacement.some(image => used.has(image.key))) return
+      broken.forEach((index, i) => { batch.images[index] = replacement[i] })
+      current.used.push(...replacement.map(image => image.key))
+      writeState(file, current)
+      api.log.warn(`${label} 已替换 ${broken.length} 张失效图片，下次仅补发仍待发送的目标`)
+      return
+    }
+    const failed = downloads.find(result => result.status === 'rejected')
+    if (failed) throw failed.reason
+    const segments = downloads.map(result => result.value)
     for (const chatId of Object.keys(slot.recipients)) {
       if (!slotIsCurrent(day, label, proxyUrl, rating)) return
       if (!targets(api.settings()).has(chatId)) continue
@@ -193,7 +216,7 @@ export function startDailyArt(api, { now = Date.now, select = selectKonachan, do
             if (!slot) {
               const used = new Set(current.used)
               if (images.some(({ key }) => used.has(key))) continue
-              slot = { images, rating, recipients: Object.fromEntries(recipients.map(id => [id, 'pending'])) }
+              slot = { images, rating, filters, recipients: Object.fromEntries(recipients.map(id => [id, 'pending'])) }
               current.slots[slotKey] = slot
               current.used.push(...images.map(({ key }) => key))
               writeState(file, current)
@@ -268,7 +291,7 @@ export function migrateYandereSettings(cfg) {
 export default {
   id: 'daily-art',
   name: '每日推图',
-  version: '1.9.0',
+  version: '2.0.0',
   api: 1,
   panel: 'panel.js',
   description: '在同一页管理 Konachan 和 Yande.re 定时推图及 QQ 按需找图。',
@@ -293,15 +316,27 @@ export default {
     api.route('/settings-schema', () => ({ ok: true, proxyField, accountFields, scheduleFields, scheduleDefaults,
       ratings: Object.fromEntries(Object.entries(booruSources).map(([id, site]) => [id, site.ratings.map(value => ({ value, label: ratingLabels[value] }))])),
     }))
-    const testConnection = source => async req => {
+    let probeBusy = false
+    let lastProbe = 0
+    const testConnection = source => async (req, res) => {
+      const http = api.core.http
+      if (!http?.requirePanelAdmin) return { ok: false, message: '连接检测需要安装 daily-art 宿主兼容补丁' }
+      if (!http.requirePanelAdmin(req, res)) return
       if (req.method !== 'POST') return { ok: false, message: '请使用面板的检测按钮' }
-      // 检测只使用这次提交的草稿，不从存储中读取密钥。
-      const credentials = source === 'konachan' ? konachanCredentials(await api.core.http.body(req) || {}) : {}
-      // 代理地址只能通过管理员保存设置，检测接口不接收任意目标地址。
-      const proxyUrl = konachanProxy(api.settings())
-      try { validateKonachanProxy(proxyUrl) } catch (error) { return { ok: false, message: error.message } }
-      const results = await probeKonachan(credentials, { source, signal: shutdown.signal, proxyUrl, checkImage: true, log: api.log, operation: 'connection-test', trace: true })
-      return { ok: true, authenticatedRequest: Boolean(credentials.apiKey), proxyConfigured: Boolean(proxyUrl), results }
+      if (Number(req.headers?.['content-length']) > 4096) { http.send(res, 413, { ok: false, message: '检测请求不得超过 4 KiB' }); return }
+      if (probeBusy || Date.now() - lastProbe < 2000) { http.send(res, 429, { ok: false, message: '正在检测或请求太频繁，请稍后再试' }); return }
+      probeBusy = true
+      try {
+        let input
+        try { input = await http.raw(req, 4096) } catch { http.send(res, 413, { ok: false, message: '检测请求不得超过 4 KiB' }); return }
+        try { input = JSON.parse(input.toString('utf8') || '{}') } catch { http.send(res, 400, { ok: false, message: '检测请求不是有效 JSON' }); return }
+        // 检测只用提交的草稿密钥和管理员保存的代理。
+        const credentials = source === 'konachan' ? konachanCredentials(input || {}) : {}
+        const proxyUrl = konachanProxy(api.settings())
+        try { validateKonachanProxy(proxyUrl) } catch (error) { return { ok: false, message: error.message } }
+        const results = await probeKonachan(credentials, { source, signal: shutdown.signal, proxyUrl, checkImage: true, log: api.log, operation: 'connection-test', trace: true })
+        return { ok: true, authenticatedRequest: Boolean(credentials.apiKey), proxyConfigured: Boolean(proxyUrl), results }
+      } finally { probeBusy = false; lastProbe = Date.now() }
     }
     api.route('/test-konachan', testConnection('konachan'))
     api.route('/test-yandere', testConnection('yandere'))

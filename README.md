@@ -4,7 +4,9 @@
 
 ## 安装
 
-需要 Aurabot 1.2.0 或以上和已连接的 QQ 网关。本模块使用扩展 API 1，无 npm 依赖。可选代理功能需要 Node.js 24.5 或以上。
+需要安装配套宿主补丁的 Aurabot 和已连接的 QQ 网关。本模块无 npm 依赖。可选代理功能需要 Node.js 24.5 或以上。
+
+**升级到 2.0 前先更新宿主。** 从 Aurabot 上游提交 [`a41519c`](https://github.com/aureth-labs/dsh-aurabot-qq/commit/a41519c0da82916ae3b374f4df71a09975883e45) 安装，或核对当前宿主是否已经包含 [`compat/aurabot-host.patch`](compat/aurabot-host.patch)。在宿主源码目录先执行 `git apply --check <补丁路径>`，再执行 `git apply <补丁路径>`，重建 Docker 镜像或重启使用该源码的 Aurabot。补丁提供按 QQ 消息 ID 绑定的授权、冷启动凭据遮罩和管理接口鉴权。没有宿主补丁时，找图和连接检测会拒绝执行。
 
 把仓库克隆到 Aurabot 数据目录的 `modules/daily-art` 下。目录名要与模块 ID `daily-art` 一致，`index.mjs` 和 `module.json` 应直接位于该目录。
 
@@ -25,6 +27,7 @@ git clone https://github.com/Reinero/aurabot-daily-art.git (Join-Path $moduleRoo
 
 「每日推送时间」使用北京时间和 24 小时制，如 `08:30`、`19:15`。每行填一个时间，也可用逗号分隔。默认每天 09:00、17:00 各发一批。每批可选 1–10 张，默认 5 张。启动或保存后会补发当天已过时点但尚未发送的批次，跨日不追发。改张数时，已选图的批次继续使用原张数。
 每个时段使用同一批图片，逐个向白名单目标发送。网关明确失败时约 5 分钟后重试未收到的目标；网关回执不明时跳过重发。
+图片永久失效时，模块用符合原筛选条件的新图替换，下次仅补发待发送的收件人。
 总开关关闭或处于试运行时，任务不发送，也不消费当天的批次。
 
 模块从 `https://konachan.net/post.json` 按「系统 → 每日推图」中保存的条件选图，并下载图片后交给 QQ 网关。定时任务不调用模型或视觉工具。
@@ -53,6 +56,7 @@ Konachan 日常请求 `konachan.net` 的 `/post.json`、`/tag.json` 和候选图
 ## 排查与数据
 
 在「系统 → 日志」查看 `[Konachan]` 记录。连接检测、请求失败和公开接口回退会记录站点、阶段、HTTP 状态、耗时、代理模式及认证方式。Cloudflare 响应会附上 Ray ID（若返回），便于站点运营方查询对应事件。日志省略密钥、代理地址、查询参数和响应正文。
+连接检测仅供宿主管理面调用，正文上限为 4 KiB，同一时刻只运行一次。Docker 部署通过已认证的面板入口访问，宿主用 `PANEL_PASSWORD` 或 `AURABOT_PANEL_PASSWORD` 核对管理认证。
 
 批次和已使用的来源 ID 存在 Aurabot 数据目录的 `modules-data/daily-art/delivery.json`，重启后保留。移除记录会使历史图片重新进入候选。
 Yande.re 使用单独的 `modules-data/daily-art/delivery-yandere.json`，API 请求访问 `yande.re`，图片可能从 `files.yande.re` 下载。日志用 `[Yande.re]` 标记。
