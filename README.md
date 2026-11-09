@@ -15,7 +15,7 @@ git clone https://github.com/Reinero/aurabot-daily-art.git (Join-Path $moduleRoo
 
 如果 Aurabot 使用自定义数据目录，请把 `$moduleRoot` 换成该目录下的 `modules`。Docker 部署时，把模块复制到 **Aurabot 容器**对应的数据卷，确保服务运行用户可读写该目录。加载后可在 Aurabot 的「系统 → 每日推图」配置。
 
-需要 Yande.re 时，将仓库内的 `extras/daily-art-yandere` 复制到同一个 `modules` 目录，使其与 `daily-art` 并列。加载后打开「系统 → Yande.re 推图」，可分别保存定时、张数、白名单、筛选条件和代理，或点击「检测连接」。初次安装时，Yande.re 定时开关关闭，白名单为空。
+打开「系统 → 每日推图」。页面上方是共用代理设置，下方可切换 Konachan 和 Yande.re 分栏。两个图源分别保存定时、张数、白名单和筛选条件。升级时会迁移旧 `daily-art-yandere` 的设置并停用旧页面，保留发送记录。如两个旧代理地址均已配置，共用地址沿用原 Konachan 代理。
 
 ## 定时推送
 
@@ -33,21 +33,22 @@ git clone https://github.com/Reinero/aurabot-daily-art.git (Join-Path $moduleRoo
 | --- | --- |
 | 评分 | 默认最低 31。上下限都包含边界，最高分可留空。 |
 | 包含、排除标签 | 各最多 5 个英文站点标签。包含条件全部满足，命中任一排除条件就跳过。用空格、换行或逗号分隔。 |
-| 分级 | 当前图源 `konachan.net` 只返回 Safe（`s`）。 |
+| 定时推送分级 | Yande.re 可选 Safe（`s`）、Questionable（`q`）、Explicit（`e`），默认 Safe。当前 `konachan.net` 仅支持 Safe。 |
 | 宽高与画幅 | 可填最小宽度和高度，也可选横图、竖图或方图。 |
 | 排序 | 按新旧、评分或分辨率选图。默认最新优先。 |
 | 高级筛选 | 接受 `id`、`width`、`height`、`mpixels`、`ratio`、`date`、`parent`、`user`、`source`、`md5`、`vote`。如 `ratio:16:9 mpixels:2.5..`。使用空格或换行分隔。高级宽高条件与相应的最小宽高只能选一种。 |
 
 高级条件由 [Konachan API](https://konachan.net/help/cheatsheet) 执行。新筛选用于尚未选图的批次，已选好的批次仍按原记录补发。凑不齐设定张数时，模块记录原因并稍后重试。
+修改分级后，旧分级的待发送批次会跳过，后续新批次按新分级选图。
 
 ## 图源、凭据和代理
 
 在「每日推图」可以选填 Konachan 用户名和个人 API Key。先点「检测连接」，再点「保存设置」。定时推送与按需搜索使用已保存的密钥访问 `konachan.net`，分级仍为 Safe。未配置密钥时使用公开接口。密钥保存后输入框为空，如需移除，请点「清除密钥」再保存。
 账号凭据不完整或认证被拒绝时，自动用同一代理设置重试公开接口。连接检测会显示回退原因。遇到 Cloudflare 验证或网络故障时，显示对应错误。
 
-「Konachan 代理地址」可填写 `http://` 或 `https://` 代理。Windows 上的本机代理可填写容器能访问的地址，例如 `http://host.docker.internal:7890`。留空时直连。如已保存代理，要恢复直连可点「清除代理」并保存。定时推送和按需找图的 API 请求、图片下载共用此设置。保存后点「检测连接」可检查 API 和样图下载，不会发送 QQ 消息。代理功能需要 Node.js 24.5 或以上。
+「共用代理地址」可填写 `http://` 或 `https://` 代理。Windows 上的本机代理可填写容器能访问的地址，例如 `http://host.docker.internal:7890`。留空时直连。如已保存代理，要恢复直连可点「清除代理」并保存。两个图源的 API 请求、图片下载共用此设置。保存后在各自分栏点「检测连接」可检查 API 和样图下载，不会发送 QQ 消息。代理功能需要 Node.js 24.5 或以上。
 
-模块日常只请求 `konachan.net`，包括 `/post.json`、`/tag.json` 和候选图片地址。「检测连接」另外查询 `konachan.com/post.json`。检测结果分别显示两个域名的可达性，日常选图仍使用 Safe 分级。单张图片下载上限为 4 MiB。
+Konachan 日常请求 `konachan.net` 的 `/post.json`、`/tag.json` 和候选图片地址，连接检测另外查询 `konachan.com/post.json`。Yande.re 请求 `yande.re` 的 API，并从 `files.yande.re` 等站内地址下载图片。单张图片下载上限为 4 MiB。
 
 ## 排查与数据
 
@@ -68,7 +69,7 @@ Yande.re 使用单独的 `modules-data/daily-art/delivery-yandere.json`，API �
 | `image_search` | 返回候选的作品 ID、评分、尺寸、标签和作品页。支持包含或排除标签、评分和尺寸下限、画幅，以及按最新、高分或分辨率排序。 |
 | `image_send` | 使用搜索批次的 `search_id` 和候选作品 ID，下载并向当前 QQ 会话发送最多 5 张图片。 |
 
-安装配套模块后，发「yande找图 初音未来的横图」即可使用 Yande.re。分两步选图时继续用同一图源的关键词，例如「yande找图 发第 2 张」。两路图源均只选择 API 标记为 Safe（`s`）的作品。Agent 根据元数据挑选，图片由模块下载并交给 QQ 网关。
+发「yande找图 初音未来的横图」即可使用 Yande.re。分两步选图时继续用同一图源的关键词，例如「yande找图 发第 2 张」。按需找图只使用 API 标记为 Safe（`s`）的作品。Agent 根据元数据挑选，图片由模块下载并交给 QQ 网关。
 
 ## 许可
 

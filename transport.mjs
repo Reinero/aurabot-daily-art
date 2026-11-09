@@ -2,11 +2,10 @@ import { Agent, request } from 'node:https'
 import { Readable } from 'node:stream'
 
 export const konachanProxy = settings => String(settings.konachanProxyUrl ?? '').trim()
-export const yandereProxy = settings => String(settings.yandereProxyUrl ?? '').trim()
 
 export const booruSources = {
-  konachan: { name: 'Konachan', origin: 'https://konachan.net', images: ['https://konachan.net'], probe: ['https://konachan.net', 'https://konachan.com'] },
-  yandere: { name: 'Yande.re', origin: 'https://yande.re', images: ['https://files.yande.re', 'https://yande.re'], probe: ['https://yande.re'] },
+  konachan: { name: 'Konachan', origin: 'https://konachan.net', images: ['https://konachan.net'], probe: ['https://konachan.net', 'https://konachan.com'], ratings: ['s'] },
+  yandere: { name: 'Yande.re', origin: 'https://yande.re', images: ['https://files.yande.re', 'https://yande.re'], probe: ['https://yande.re'], ratings: ['s', 'q', 'e'] },
 }
 
 export function validateKonachanProxy(value) {

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { downloadKonachanImage, konachanCredentials, lookupKonachanTags, searchKonachan } from './konachan.mjs'
-import { booruSources, konachanProxy, yandereProxy } from './transport.mjs'
+import { booruSources, konachanProxy } from './transport.mjs'
 
 function triggerSource(text) {
   if (/^\s*konachan\s*找图/iu.test(text)) return 'konachan'
@@ -27,13 +27,11 @@ export function registerImageTools(api, { fetchPosts, download = downloadKonacha
   const triggers = new Map()
   const allowed = chat => (chat.kind === 'private' || chat.kind === 'group') &&
     checkAllowed(api.config(), chat).allowed && levelFor(api.config(), chat) !== 'chat'
-  const yandereSettings = () => api.use?.('daily-art-yandere')?.settings()
-  const available = source => source === 'konachan' || (source === 'yandere' && Boolean(yandereSettings()))
   const requestOptions = source => {
-    const settings = source === 'yandere' ? yandereSettings() ?? {} : api.settings()
+    const settings = api.settings()
     return {
       source, signal: shutdown.signal, credentials: source === 'konachan' ? konachanCredentials(settings) : undefined,
-      proxyUrl: source === 'yandere' ? yandereProxy(settings) : konachanProxy(settings), fetchPosts, log: api.log, operation: 'on-demand',
+      proxyUrl: konachanProxy(settings), fetchPosts, log: api.log, operation: 'on-demand',
     }
   }
 
@@ -41,13 +39,13 @@ export function registerImageTools(api, { fetchPosts, download = downloadKonacha
   api.rule(guidance)
   api.on('message', msg => {
     const source = triggerSource(msg.text)
-    if (!allowed(msg) || msg.atOthers || !available(source)) return
+    if (!allowed(msg) || msg.atOthers || !source) return
     const now = Date.now()
     for (const [id, entry] of triggers) if (entry.expires <= now) triggers.delete(id)
     triggers.set(msg.chatId, { source, sender: String(msg.userId), expires: now + ttl, previewOnly: previewOnly.test(msg.text) })
   })
   api.on('group/decide', (decision, { msg }) => {
-    if (allowed(msg) && !msg.atOthers && available(triggerSource(msg.text))) return { ...decision, reply: true, mode: 'must', reason: '明确触发图源搜索' }
+    if (allowed(msg) && !msg.atOthers && triggerSource(msg.text)) return { ...decision, reply: true, mode: 'must', reason: '明确触发图源搜索' }
   })
   api.on('prompt', (_content, { chat, sessionId, senderId, extraSenders = [], queryText }) => {
     // prompt 使用完整 ID，挂载工具时 Hub 会去掉 session- 前缀。
@@ -56,7 +54,7 @@ export function registerImageTools(api, { fetchPosts, download = downloadKonacha
     const explicit = triggers.get(chat.chatId)
     const now = Date.now()
     if (!explicit || explicit.expires <= now || ![senderId, ...extraSenders].map(String).includes(explicit.sender) ||
-      !allowed(chat) || !available(explicit.source) || !String(queryText || '').split('\n').some(line => triggerSource(line) === explicit.source)) {
+      !allowed(chat) || !String(queryText || '').split('\n').some(line => triggerSource(line) === explicit.source)) {
       if (previous) previous.request = null
       return
     }
@@ -72,7 +70,7 @@ export function registerImageTools(api, { fetchPosts, download = downloadKonacha
     const active = request => {
       const entry = sessions.get(sessionId)
       return !shutdown.signal.aborted && api.config().enabled && allowed(chat) && entry?.request &&
-        entry.expires > Date.now() && available(entry.request.source) && (!request || entry.request === request) &&
+        entry.expires > Date.now() && (!request || entry.request === request) &&
         hub.chatOfSession(sessionId) === chat.chatId && hub.turnSenders(sessionId).length > 0 ? entry : null
     }
     const tool = spec => api.defineTool({
@@ -92,7 +90,7 @@ export function registerImageTools(api, { fetchPosts, download = downloadKonacha
           const { source } = entry.request
           if (!checkSource(args.source, source)) return fail(`请使用「${commandFor(source)}」对应的图源。`)
           const help = {
-            sources: Object.keys(booruSources).filter(available).map(id => ({ id, name: booruSources[id].name, rating: 'safe' })),
+            sources: Object.keys(booruSources).map(id => ({ id, name: booruSources[id].name, rating: 'safe' })),
             filters: 'tags 全部包含；exclude_tags 任一命中即排除；min_score、min_width、min_height 为包含边界的下限；orientation 可选 any、landscape、portrait、square。标签使用英文站点名，包含和排除各最多 5 个。',
             sorts: { newest: '最新作品优先', score: '高分优先', resolution: '像素面积从大到小' },
             limits: `每次搜索最多返回 12 个候选，发送最多选 ${maxImages} 张。`,

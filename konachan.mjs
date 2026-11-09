@@ -246,7 +246,7 @@ function postCriteria(args, source) {
     throw new Error('评分上下限须为整数，且下限不能大于上限')
   }
   if (![min_width, min_height].every(n => Number.isSafeInteger(n) && n >= 0)) throw new Error('尺寸下限须为非负整数')
-  if (rating !== 's') throw new Error(`${booruSources[source].name} 推图只支持 Safe（s）分级`)
+  if (!booruSources[source].ratings.includes(rating)) throw new Error(`${booruSources[source].name} 推图只支持 Safe（s）分级`)
   if (!Object.hasOwn(orders, sort) || !['any', 'landscape', 'portrait', 'square'].includes(orientation)) throw new Error('不支持的排序或画幅')
   if (include.some(t => exclude.includes(t))) throw new Error('同一个标签不能同时包含和排除')
   const query = [...include, ...exclude.map(t => `-${t}`), `rating:${rating}`]

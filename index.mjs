@@ -1,7 +1,7 @@
 import { readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { downloadKonachanImage, konachanCredentials, probeKonachan, selectKonachan } from './konachan.mjs'
 import { registerImageTools } from './image-tools.mjs'
-import { booruSources, konachanProxy, validateKonachanProxy, yandereProxy } from './transport.mjs'
+import { booruSources, konachanProxy, validateKonachanProxy } from './transport.mjs'
 
 const time = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
 const defaultTimes = '09:00\n17:00'
@@ -76,7 +76,7 @@ function writeState(file, state) {
 
 export function startDailyArt(api, { now = Date.now, select = selectKonachan, download = downloadKonachanImage, source = 'konachan' } = {}) {
   const file = api.dataDir(source === 'konachan' ? 'delivery.json' : 'delivery-yandere.json')
-  const readProxy = source === 'konachan' ? konachanProxy : yandereProxy
+  const readProxy = konachanProxy
   const title = source === 'konachan' ? '每日推图' : `${booruSources[source].name} 推图`
   const shutdown = new AbortController()
   const retryAt = new Map()
@@ -89,20 +89,22 @@ export function startDailyArt(api, { now = Date.now, select = selectKonachan, do
     return !shutdown.signal.aborted && clock(now()).day === day && api.settings().enabled === true && cfg.enabled && !cfg.dryRun
   }
 
-  function slotIsCurrent(day, label, proxyUrl) {
+  function slotIsCurrent(day, label, proxyUrl, rating) {
     const settings = api.settings()
-    if (!canSend(day) || readProxy(settings) !== proxyUrl) return false
+    if (!canSend(day) || readProxy(settings) !== proxyUrl || (rating && (settings.pushRating || 's') !== rating)) return false
     try { return pushSchedule(settings).labels.includes(label) } catch { return false }
   }
 
   async function deliver(day, label, slotKey, slot, proxyUrl) {
+    const rating = slot.rating ?? 's'
+    if (!slotIsCurrent(day, label, proxyUrl, rating)) return
     const signal = AbortSignal.any([shutdown.signal, AbortSignal.timeout(20_000)])
     const segments = await Promise.all(slot.images.map(async ({ url }) => {
       const bytes = await download(url, { source, proxyUrl, signal, log: api.log, operation: 'scheduled' })
       return { type: 'image', data: { file: `base64://${bytes.toString('base64')}` } }
     }))
     for (const chatId of Object.keys(slot.recipients)) {
-      if (!slotIsCurrent(day, label, proxyUrl)) return
+      if (!slotIsCurrent(day, label, proxyUrl, rating)) return
       if (!targets(api.settings()).has(chatId)) continue
       const state = readState(file, day)
       const recipient = state.slots[slotKey]?.recipients[chatId]
@@ -116,7 +118,7 @@ export function startDailyArt(api, { now = Date.now, select = selectKonachan, do
         const result = await api.core.hub.sendSegments(chatId, segments, `[${title} ${day} ${label}]`, {
           throwOnError: true,
           timeoutMs: 60_000,
-          isCurrent: () => slotIsCurrent(day, label, proxyUrl) && targets(api.settings()).has(chatId),
+          isCurrent: () => slotIsCurrent(day, label, proxyUrl, rating) && targets(api.settings()).has(chatId),
         })
         if (result?.message_id != null) status = 'sent'
         else if (result != null) status = 'uncertain'
@@ -164,6 +166,7 @@ export function startDailyArt(api, { now = Date.now, select = selectKonachan, do
         if (!eligible.size) continue
         const state = readState(file, day)
         let slot = state.slots[slotKey]
+        if (slot && (slot.rating ?? 's') !== (settings.pushRating || 's')) continue
         if (slot && ![...eligible].some(id => slot.recipients[id] === 'pending')) continue
         retryAt.set(slotKey, now() + retryMs)
         try {
@@ -187,7 +190,7 @@ export function startDailyArt(api, { now = Date.now, select = selectKonachan, do
             if (!slot) {
               const used = new Set(current.used)
               if (images.some(({ key }) => used.has(key))) continue
-              slot = { images, recipients: Object.fromEntries(recipients.map(id => [id, 'pending'])) }
+              slot = { images, rating: filters.rating, recipients: Object.fromEntries(recipients.map(id => [id, 'pending'])) }
               current.slots[slotKey] = slot
               current.used.push(...images.map(({ key }) => key))
               writeState(file, current)
@@ -207,33 +210,28 @@ export function startDailyArt(api, { now = Date.now, select = selectKonachan, do
   return tick
 }
 
-export default {
-  id: 'daily-art',
-  name: '每日推图',
-  version: '1.7.0',
-  api: 1,
-  panel: 'panel.js',
-  description: '按北京时间定时推图，可设置时间和张数，也支持 QQ 会话按需找图。',
-  defaults: {
-    enabled: false, groupWhitelist: '', privateWhitelist: '', konachanUsername: '', konachanApiKey: '', konachanProxyUrl: '',
-    pushTimes: defaultTimes, pushCount: defaultCount,
-    pushMinScore: 31, pushMaxScore: '', pushTags: '', pushExcludeTags: '', pushRating: 's',
-    pushMinWidth: 0, pushMinHeight: 0, pushOrientation: 'any', pushSort: 'newest', pushAdvanced: '',
-  },
-  settings: [
+const scheduleDefaults = {
+  enabled: false, groupWhitelist: '', privateWhitelist: '', pushTimes: defaultTimes, pushCount: defaultCount,
+  pushMinScore: 31, pushMaxScore: '', pushTags: '', pushExcludeTags: '', pushRating: 's',
+  pushMinWidth: 0, pushMinHeight: 0, pushOrientation: 'any', pushSort: 'newest', pushAdvanced: '',
+}
+const accountFields = [
+  { key: 'konachanUsername', label: 'Konachan 用户名', type: 'text', hint: '使用个人 API Key 时填写 Konachan 账号用户名。' },
+  { key: 'konachanApiKey', label: 'Konachan API Key', type: 'password', hint: '留空使用公开接口。认证失败会自动回退。' },
+]
+const proxyField = { key: 'konachanProxyUrl', label: '共用代理地址', type: 'password', placeholder: 'http://host.docker.internal:7890', hint: '两个图源的 API 和图片下载共用。未设置时直连。' }
+const ratingLabels = { s: 'Safe（s）', q: 'Questionable（q）', e: 'Explicit（e）' }
+const scheduleFields = [
     { key: 'enabled', label: '开启定时推送', type: 'switch', hint: '开启后会向下方名单补发当天已错过的时段。' },
     { key: 'pushTimes', label: '每日推送时间（北京时间）', type: 'textarea', placeholder: defaultTimes, hint: '24 小时制 HH:mm。每行一个，也可用逗号分隔。留空使用 09:00、17:00。' },
     { key: 'pushCount', label: '每批图片数', type: 'number', min: 1, max: maxCount, hint: '每个推送时间发送的张数。留空使用 5 张。' },
     { key: 'groupWhitelist', label: '群聊推送白名单', type: 'textarea', hint: '填 QQ 群号，每行一个，也可用逗号分隔。留空时不推送到群聊。' },
     { key: 'privateWhitelist', label: '私聊推送白名单', type: 'textarea', hint: '填接收推送的 QQ 号，每行一个，也可用逗号分隔。主人也需填写。' },
-    { key: 'konachanUsername', label: 'Konachan 用户名', type: 'text', hint: '使用个人 API Key 时填写 Konachan 账号用户名。' },
-    { key: 'konachanApiKey', label: 'Konachan API Key', type: 'password', hint: '留空时使用公开接口。密钥无法认证时自动回退到公开接口。已保存的密钥会隐藏。' },
-    { key: 'konachanProxyUrl', label: 'Konachan 代理地址', type: 'password', placeholder: 'http://host.docker.internal:7890', hint: '定时和按需的 API 请求及图片下载共用。未设置时直连。填好后保存再检测，已保存的地址会隐藏。' },
     { key: 'pushMinScore', label: '最低评分', type: 'number', hint: '包含该分数。留空按 31 处理，即评分大于 30。' },
     { key: 'pushMaxScore', label: '最高评分', type: 'number', hint: '包含该分数。留空不限制最高分。' },
     { key: 'pushTags', label: '包含标签', type: 'textarea', placeholder: 'hatsune_miku, landscape', hint: '最多 5 个英文站点标签。图片需同时匹配，空格、换行或逗号分隔。' },
     { key: 'pushExcludeTags', label: '排除标签', type: 'textarea', placeholder: 'swimsuit, text', hint: '最多 5 个英文站点标签，命中任意一个就跳过。' },
-    { key: 'pushRating', label: '内容分级（rating）', type: 'select', options: [{ value: 's', label: 'Safe（s）' }], hint: '当前使用的 Konachan 安全站点仅返回 Safe。' },
+    { key: 'pushRating', label: '定时推送分级', type: 'select' },
     { key: 'pushMinWidth', label: '最小宽度（px）', type: 'number', min: 0, hint: '留空或填 0 不限制。' },
     { key: 'pushMinHeight', label: '最小高度（px）', type: 'number', min: 0, hint: '留空或填 0 不限制。' },
     { key: 'pushOrientation', label: '画幅', type: 'select', options: [
@@ -244,34 +242,65 @@ export default {
       { value: 'score', label: '评分从高到低' }, { value: 'score_asc', label: '评分从低到高' },
       { value: 'resolution', label: '分辨率从高到低' }, { value: 'resolution_asc', label: '分辨率从低到高' },
     ] },
-    { key: 'pushAdvanced', label: 'Konachan 高级筛选', type: 'textarea', placeholder: 'ratio:16:9 mpixels:2.5..', hint: '可用 id、width、height、mpixels、ratio、date、parent、user、source、md5、vote，空格或换行分隔。宽高高级条件不能与上方相应的下限同时填写。' },
-  ],
+    { key: 'pushAdvanced', label: '高级筛选', type: 'textarea', placeholder: 'ratio:16:9 mpixels:2.5..', hint: '可用 id、width、height、mpixels、ratio、date、parent、user、source、md5、vote，空格或换行分隔。宽高高级条件不能与上方相应的下限同时填写。' },
+]
+
+const legacyId = 'daily-art-yandere'
+
+export function migrateYandereSettings(cfg) {
+  const legacy = cfg.ext?.[legacyId]
+  if (!legacy) return cfg
+  const ext = { ...cfg.ext }
+  delete ext[legacyId]
+  const main = { ...ext['daily-art'] }
+  if (!main.yandere) {
+    main.yandere = Object.fromEntries(Object.keys(scheduleDefaults).filter(key => Object.hasOwn(legacy, key)).map(key => [key, legacy[key]]))
+    if (cfg.modules?.[legacyId]?.enabled === false) main.yandere.enabled = false
+    if (!konachanProxy(main) && legacy.yandereProxyUrl) main.konachanProxyUrl = legacy.yandereProxyUrl
+  }
+  ext['daily-art'] = main
+  return { ...cfg, ext, modules: { ...cfg.modules, [legacyId]: { ...cfg.modules?.[legacyId], enabled: false } } }
+}
+
+export default {
+  id: 'daily-art',
+  name: '每日推图',
+  version: '1.8.0',
+  api: 1,
+  panel: 'panel.js',
+  description: '在同一页管理 Konachan 和 Yande.re 定时推图及 QQ 按需找图。',
+  defaults: { ...scheduleDefaults, konachanUsername: '', konachanApiKey: '', konachanProxyUrl: '' },
   setup(api) {
+    const { registerSecretField } = api.lib('core/config')
+    for (const field of [proxyField, ...accountFields]) {
+      if (field.type === 'password') registerSecretField(['ext', 'daily-art', field.key])
+    }
+    if (api.config().ext?.[legacyId]) api.setConfig(migrateYandereSettings)
+    api.on('module/start', id => {
+      if (id === legacyId && api.config().ext?.[legacyId]) api.setConfig(migrateYandereSettings)
+    })
     startDailyArt(api)
-    startDailyArt({ ...api, settings: () => api.use('daily-art-yandere')?.settings() ?? {} }, { source: 'yandere' })
+    startDailyArt({ ...api, settings: () => {
+      const settings = api.settings()
+      return { ...scheduleDefaults, ...settings.yandere, konachanProxyUrl: settings.konachanProxyUrl }
+    } }, { source: 'yandere' })
     registerImageTools(api)
     const shutdown = new AbortController()
     api.onDispose(() => shutdown.abort())
-    api.route('/test-konachan', async req => {
+    api.route('/settings-schema', () => ({ ok: true, proxyField, accountFields, scheduleFields, scheduleDefaults,
+      ratings: Object.fromEntries(Object.entries(booruSources).map(([id, site]) => [id, site.ratings.map(value => ({ value, label: ratingLabels[value] }))])),
+    }))
+    const testConnection = source => async req => {
       if (req.method !== 'POST') return { ok: false, message: '请使用面板的检测按钮' }
-      const input = await api.core.http.body(req)
       // 检测只使用这次提交的草稿，不从存储中读取密钥。
-      const credentials = konachanCredentials(input || {})
+      const credentials = source === 'konachan' ? konachanCredentials(await api.core.http.body(req) || {}) : {}
       // 代理地址只能通过管理员保存设置，检测接口不接收任意目标地址。
       const proxyUrl = konachanProxy(api.settings())
       try { validateKonachanProxy(proxyUrl) } catch (error) { return { ok: false, message: error.message } }
-      const results = await probeKonachan(credentials, { signal: shutdown.signal, proxyUrl, checkImage: true, log: api.log, operation: 'connection-test', trace: true })
+      const results = await probeKonachan(credentials, { source, signal: shutdown.signal, proxyUrl, checkImage: true, log: api.log, operation: 'connection-test', trace: true })
       return { ok: true, authenticatedRequest: Boolean(credentials.apiKey), proxyConfigured: Boolean(proxyUrl), results }
-    })
-    return {
-      async probeYandere() {
-        const settings = api.use('daily-art-yandere')?.settings()
-        if (!settings) return { ok: false, message: '请启用 Yande.re 推图模块' }
-        const proxyUrl = yandereProxy(settings)
-        try { validateKonachanProxy(proxyUrl) } catch (error) { return { ok: false, message: error.message } }
-        const results = await probeKonachan({}, { source: 'yandere', proxyUrl, signal: shutdown.signal, checkImage: true, log: api.log, operation: 'connection-test', trace: true })
-        return { ok: true, proxyConfigured: Boolean(proxyUrl), results }
-      },
     }
+    api.route('/test-konachan', testConnection('konachan'))
+    api.route('/test-yandere', testConnection('yandere'))
   },
 }
