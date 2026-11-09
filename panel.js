@@ -7,6 +7,16 @@ function fieldControl(field, values, change) {
   const placeholder = values[`${key}Set`] ? '已保存（不改就留空）' : field.placeholder
   if (type === 'switch') return h(Switch, { on: Boolean(value), onChange: change, title: label })
   if (type === 'select') return h(Select, { value, options, onChange: change, ariaLabel: label })
+  if (type === 'multi-select') {
+    const selected = Array.isArray(value) ? value : [value || 's']
+    return h('div', { role: 'group', 'aria-label': label, style: { display: 'flex', gap: 12, flexWrap: 'wrap' } },
+      ...options.map(option => {
+        const checked = selected.includes(option.value)
+        return h('label', { key: option.value }, h('input', { type: 'checkbox', checked, disabled: checked && selected.length === 1,
+          onChange: () => change(checked ? selected.filter(item => item !== option.value) : [...selected, option.value]),
+        }), ' ', option.label)
+      }))
+  }
   const props = { value: value ?? '', placeholder, 'aria-label': label, onChange: e => {
     const next = e.target.value
     change(type === 'number' && next !== '' ? Number(next) : next)
@@ -55,7 +65,7 @@ return function DailyArtPanel({ settings, draftSettings, setSettings }) {
   if (!schema) return h(Card, { title: '每日推图' }, error || '正在加载配置…')
   const values = isKonachan ? draftSettings : { ...schema.scheduleDefaults, ...draftSettings.yandere }
   const fields = schema.scheduleFields.map(field => field.key === 'pushRating'
-    ? { ...field, options: schema.ratings[source], hint: isKonachan ? '当前 Konachan 安全站点仅返回 Safe。' : '选择定时推送要使用的分级，默认 Safe。' }
+    ? { ...field, options: schema.ratings[source], hint: isKonachan ? '当前 Konachan 安全站点仅返回 Safe。' : '可多选，图片匹配任一勾选分级即可。默认 Safe。' }
     : field)
 
   return h(React.Fragment, null,

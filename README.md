@@ -33,7 +33,7 @@ git clone https://github.com/Reinero/aurabot-daily-art.git (Join-Path $moduleRoo
 | --- | --- |
 | 评分 | 默认最低 31。上下限都包含边界，最高分可留空。 |
 | 包含、排除标签 | 各最多 5 个英文站点标签。包含条件全部满足，命中任一排除条件就跳过。用空格、换行或逗号分隔。 |
-| 定时推送分级 | Yande.re 可选 Safe（`s`）、Questionable（`q`）、Explicit（`e`），默认 Safe。当前 `konachan.net` 仅支持 Safe。 |
+| 定时推送分级 | Yande.re 可多选 Safe（`s`）、Questionable（`q`）、Explicit（`e`），匹配任一勾选项即可，默认仅 Safe。当前 `konachan.net` 仅支持 Safe。 |
 | 宽高与画幅 | 可填最小宽度和高度，也可选横图、竖图或方图。 |
 | 排序 | 按新旧、评分或分辨率选图。默认最新优先。 |
 | 高级筛选 | 接受 `id`、`width`、`height`、`mpixels`、`ratio`、`date`、`parent`、`user`、`source`、`md5`、`vote`。如 `ratio:16:9 mpixels:2.5..`。使用空格或换行分隔。高级宽高条件与相应的最小宽高只能选一种。 |
@@ -69,7 +69,7 @@ Yande.re 使用单独的 `modules-data/daily-art/delivery-yandere.json`，API �
 | `image_search` | 返回候选的作品 ID、评分、尺寸、标签和作品页。支持包含或排除标签、评分和尺寸下限、画幅，以及按最新、高分或分辨率排序。 |
 | `image_send` | 使用搜索批次的 `search_id` 和候选作品 ID，下载并向当前 QQ 会话发送最多 5 张图片。 |
 
-发「yande找图 初音未来的横图」即可使用 Yande.re。分两步选图时继续用同一图源的关键词，例如「yande找图 发第 2 张」。按需找图只使用 API 标记为 Safe（`s`）的作品。Agent 根据元数据挑选，图片由模块下载并交给 QQ 网关。
+发「yande找图 初音未来的横图」即可使用 Yande.re。按需找图默认只查 Safe（`s`），与定时推送的分级勾选独立。只有主人紧跟在关键词后明确填写 `rating:q` 或 `rating:e` 才会查相应分级，图源不支持时会提示。分两步选图时继续用同一图源和分级，例如「yande找图 rating:q 发第 2 张」。Agent 根据元数据挑选，图片由模块下载并交给 QQ 网关。
 
 ## 许可
 

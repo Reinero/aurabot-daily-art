@@ -1,5 +1,5 @@
 import { readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { downloadKonachanImage, konachanCredentials, probeKonachan, selectKonachan } from './konachan.mjs'
+import { downloadKonachanImage, konachanCredentials, probeKonachan, ratingSelection, selectKonachan } from './konachan.mjs'
 import { registerImageTools } from './image-tools.mjs'
 import { booruSources, konachanProxy, validateKonachanProxy } from './transport.mjs'
 
@@ -38,7 +38,7 @@ function targets(settings) {
   ])
 }
 
-function pushFilters(settings) {
+function pushFilters(settings, source) {
   const tagList = value => String(value ?? '').split(/[\s,，;；]+/).filter(Boolean)
   return {
     min_score: settings.pushMinScore === '' ? 31 : settings.pushMinScore ?? 31,
@@ -47,7 +47,7 @@ function pushFilters(settings) {
     exclude_tags: tagList(settings.pushExcludeTags),
     min_width: settings.pushMinWidth === '' ? 0 : settings.pushMinWidth ?? 0,
     min_height: settings.pushMinHeight === '' ? 0 : settings.pushMinHeight ?? 0,
-    rating: settings.pushRating || 's',
+    rating: ratingSelection(settings.pushRating, source),
     orientation: settings.pushOrientation || 'any',
     sort: settings.pushSort || 'newest',
     advanced: settings.pushAdvanced || '',
@@ -91,8 +91,10 @@ export function startDailyArt(api, { now = Date.now, select = selectKonachan, do
 
   function slotIsCurrent(day, label, proxyUrl, rating) {
     const settings = api.settings()
-    if (!canSend(day) || readProxy(settings) !== proxyUrl || (rating && (settings.pushRating || 's') !== rating)) return false
-    try { return pushSchedule(settings).labels.includes(label) } catch { return false }
+    if (!canSend(day) || readProxy(settings) !== proxyUrl) return false
+    try {
+      return pushSchedule(settings).labels.includes(label) && (!rating || ratingSelection(settings.pushRating, source).join(',') === rating)
+    } catch { return false }
   }
 
   async function deliver(day, label, slotKey, slot, proxyUrl) {
@@ -166,19 +168,20 @@ export function startDailyArt(api, { now = Date.now, select = selectKonachan, do
         if (!eligible.size) continue
         const state = readState(file, day)
         let slot = state.slots[slotKey]
-        if (slot && (slot.rating ?? 's') !== (settings.pushRating || 's')) continue
         if (slot && ![...eligible].some(id => slot.recipients[id] === 'pending')) continue
         retryAt.set(slotKey, now() + retryMs)
         try {
+          const filters = pushFilters(settings, source)
+          const rating = filters.rating.join(',')
+          if (slot && (slot.rating ?? 's') !== rating) continue
           if (!slot) {
-            const filters = pushFilters(settings)
             const credentials = konachanCredentials(settings)
             const { count } = pushSchedule(settings)
             const images = await select(new Set(state.used), count, { source, signal: shutdown.signal, filters, credentials, proxyUrl, log: api.log, operation: 'scheduled' })
             if (!slotIsCurrent(day, label, proxyUrl)) continue
             const latest = api.settings()
             const latestCredentials = konachanCredentials(latest)
-            if (count !== pushSchedule(latest).count || JSON.stringify(filters) !== JSON.stringify(pushFilters(latest)) ||
+            if (count !== pushSchedule(latest).count || JSON.stringify(filters) !== JSON.stringify(pushFilters(latest, source)) ||
               credentials.username !== latestCredentials.username || credentials.apiKey !== latestCredentials.apiKey) {
               retryAt.delete(slotKey)
               continue
@@ -190,7 +193,7 @@ export function startDailyArt(api, { now = Date.now, select = selectKonachan, do
             if (!slot) {
               const used = new Set(current.used)
               if (images.some(({ key }) => used.has(key))) continue
-              slot = { images, rating: filters.rating, recipients: Object.fromEntries(recipients.map(id => [id, 'pending'])) }
+              slot = { images, rating, recipients: Object.fromEntries(recipients.map(id => [id, 'pending'])) }
               current.slots[slotKey] = slot
               current.used.push(...images.map(({ key }) => key))
               writeState(file, current)
@@ -212,7 +215,7 @@ export function startDailyArt(api, { now = Date.now, select = selectKonachan, do
 
 const scheduleDefaults = {
   enabled: false, groupWhitelist: '', privateWhitelist: '', pushTimes: defaultTimes, pushCount: defaultCount,
-  pushMinScore: 31, pushMaxScore: '', pushTags: '', pushExcludeTags: '', pushRating: 's',
+  pushMinScore: 31, pushMaxScore: '', pushTags: '', pushExcludeTags: '', pushRating: ['s'],
   pushMinWidth: 0, pushMinHeight: 0, pushOrientation: 'any', pushSort: 'newest', pushAdvanced: '',
 }
 const accountFields = [
@@ -231,7 +234,7 @@ const scheduleFields = [
     { key: 'pushMaxScore', label: '最高评分', type: 'number', hint: '包含该分数。留空不限制最高分。' },
     { key: 'pushTags', label: '包含标签', type: 'textarea', placeholder: 'hatsune_miku, landscape', hint: '最多 5 个英文站点标签。图片需同时匹配，空格、换行或逗号分隔。' },
     { key: 'pushExcludeTags', label: '排除标签', type: 'textarea', placeholder: 'swimsuit, text', hint: '最多 5 个英文站点标签，命中任意一个就跳过。' },
-    { key: 'pushRating', label: '定时推送分级', type: 'select' },
+    { key: 'pushRating', label: '定时推送分级', type: 'multi-select' },
     { key: 'pushMinWidth', label: '最小宽度（px）', type: 'number', min: 0, hint: '留空或填 0 不限制。' },
     { key: 'pushMinHeight', label: '最小高度（px）', type: 'number', min: 0, hint: '留空或填 0 不限制。' },
     { key: 'pushOrientation', label: '画幅', type: 'select', options: [
@@ -265,7 +268,7 @@ export function migrateYandereSettings(cfg) {
 export default {
   id: 'daily-art',
   name: '每日推图',
-  version: '1.8.0',
+  version: '1.9.0',
   api: 1,
   panel: 'panel.js',
   description: '在同一页管理 Konachan 和 Yande.re 定时推图及 QQ 按需找图。',

@@ -7,6 +7,16 @@ const imageTypes = new Set(['image/jpeg', 'image/png', 'image/webp'])
 const tagPattern = /^[a-z0-9_][a-z0-9_()'.+\-]{0,79}$/
 const orders = { newest: 'id_desc', oldest: 'id', score: 'score', score_asc: 'score_asc', resolution: 'mpixels', resolution_asc: 'mpixels_asc' }
 
+export function ratingSelection(value, source) {
+  const site = booruSources[source]
+  const chosen = Array.isArray(value) ? value : [value || 's']
+  if (!chosen.length) throw new Error('请至少选择一个内容分级')
+  if (chosen.some(rating => !site.ratings.includes(rating))) {
+    throw new Error(source === 'konachan' ? 'Konachan 当前只支持 Safe（s）分级' : `${site.name} 不支持所选分级`)
+  }
+  return site.ratings.filter(rating => chosen.includes(rating))
+}
+
 export function konachanCredentials(settings) {
   return { username: String(settings.konachanUsername ?? '').trim(), apiKey: String(settings.konachanApiKey ?? '').trim() }
 }
@@ -246,10 +256,13 @@ function postCriteria(args, source) {
     throw new Error('评分上下限须为整数，且下限不能大于上限')
   }
   if (![min_width, min_height].every(n => Number.isSafeInteger(n) && n >= 0)) throw new Error('尺寸下限须为非负整数')
-  if (!booruSources[source].ratings.includes(rating)) throw new Error(`${booruSources[source].name} 推图只支持 Safe（s）分级`)
+  const ratings = ratingSelection(rating, source)
   if (!Object.hasOwn(orders, sort) || !['any', 'landscape', 'portrait', 'square'].includes(orientation)) throw new Error('不支持的排序或画幅')
   if (include.some(t => exclude.includes(t))) throw new Error('同一个标签不能同时包含和排除')
-  const query = [...include, ...exclude.map(t => `-${t}`), `rating:${rating}`]
+  const query = [...include, ...exclude.map(t => `-${t}`)]
+  // 站点会用最后一个同名 rating 覆盖前面的条件。两档时排除第三档，三档时由本地校验。
+  if (ratings.length === 1) query.push(`rating:${ratings[0]}`)
+  else if (ratings.length === 2) query.push(`-rating:${booruSources[source].ratings.find(r => !ratings.includes(r))}`)
   if (min_score != null || max_score != null) query.push(`score:${min_score ?? ''}..${max_score ?? ''}`)
   query.push(`order:${orders[sort]}`)
   if (min_width) query.push(`width:${min_width}..`)
@@ -257,7 +270,7 @@ function postCriteria(args, source) {
   query.push(...advancedTerms(advanced, new Set([...(min_width ? ['width'] : []), ...(min_height ? ['height'] : [])])))
 
   function matches(post, requireDimensions = false) {
-    if (!Number.isSafeInteger(post?.id) || post.id <= 0 || post.rating !== rating || !Number.isFinite(post.score)) return false
+    if (!Number.isSafeInteger(post?.id) || post.id <= 0 || !ratings.includes(post.rating) || !Number.isFinite(post.score)) return false
     if ((min_score != null && post.score < min_score) || (max_score != null && post.score > max_score)) return false
     if (requireDimensions || min_width || min_height || orientation !== 'any') {
       if (!Number.isSafeInteger(post.width) || !Number.isSafeInteger(post.height) || post.width <= 0 || post.height <= 0 || post.width < min_width || post.height < min_height) return false
@@ -288,7 +301,7 @@ export async function searchKonachan(args, options) {
       const postTags = String(p.tags ?? '').split(/\s+/).filter(t => tagPattern.test(t))
       const url = imageUrl(p, source)
       if (!url || found.has(p.id)) continue
-      found.set(p.id, { id: p.id, score: p.score, width: p.width, height: p.height, tags: postTags.slice(0, 25), post_url: `${origin}/post/show/${p.id}`, url })
+      found.set(p.id, { id: p.id, rating: p.rating, score: p.score, width: p.width, height: p.height, tags: postTags.slice(0, 25), post_url: `${origin}/post/show/${p.id}`, url })
       if (found.size === limit) return [...found.values()]
     }
   }
