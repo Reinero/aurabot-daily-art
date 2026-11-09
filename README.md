@@ -77,4 +77,4 @@ Yande.re 使用单独的 `modules-data/daily-art/delivery-yandere.json`，API �
 
 ## 许可
 
-模块源码采用 [MIT 许可](LICENSE)。图片来自 Konachan，作品权利归各自权利人所有。
+模块源码采用 [MIT 许可](LICENSE)。
