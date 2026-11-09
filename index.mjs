@@ -1,7 +1,8 @@
 import { readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { downloadKonachanImage, konachanCredentials, PermanentImageError, probeKonachan, ratingSelection, selectKonachan } from './konachan.mjs'
-import { registerImageTools } from './image-tools.mjs'
-import { booruSources, konachanProxy, validateKonachanProxy } from './transport.mjs'
+import { downloadKonachanImage, konachanCredentials, PermanentImageError, ratingSelection, selectKonachan } from './lib/konachan.mjs'
+import { registerSearch } from './lib/search.mjs'
+import { openVault, registerAdmin } from './lib/admin.mjs'
+import { booruSources, konachanProxy } from './lib/transport.mjs'
 
 const time = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
 const defaultTimes = '09:00\n17:00'
@@ -292,54 +293,30 @@ export function migrateYandereSettings(cfg) {
 export default {
   id: 'daily-art',
   name: '每日推图',
-  version: '2.1.0',
+  version: '3.0.0',
   api: 1,
   panel: 'panel.js',
   description: '在同一页管理 Konachan 和 Yande.re 定时推图及 QQ 按需找图。',
-  defaults: { ...scheduleDefaults, konachanUsername: '', konachanApiKey: '', konachanProxyUrl: '', allowPrivateWhitelistSearch: false },
+  defaults: { ...scheduleDefaults, konachanUsername: '', allowPrivateWhitelistSearch: false },
   setup(api) {
-    const { registerSecretField } = api.lib('core/config')
-    for (const field of [proxyField, ...accountFields]) {
-      if (field.type === 'password') registerSecretField(['ext', 'daily-art', field.key])
+    const vault = openVault(api)
+    function migrate() {
+      const current = api.config()
+      const next = vault.migrate(migrateYandereSettings(current))
+      if (next !== current) api.setConfig(() => next)
     }
-    if (api.config().ext?.[legacyId]) api.setConfig(migrateYandereSettings)
-    api.on('module/start', id => {
-      if (id === legacyId && api.config().ext?.[legacyId]) api.setConfig(migrateYandereSettings)
-    })
-    startDailyArt(api)
+    migrate()
+    api.on('config', migrate)
+    const runtime = { ...api, settings: vault.settings }
+    startDailyArt(runtime)
     startDailyArt({ ...api, settings: () => {
-      const settings = api.settings()
+      const settings = vault.settings()
       return { ...scheduleDefaults, ...settings.yandere, konachanProxyUrl: settings.konachanProxyUrl }
     } }, { source: 'yandere' })
-    registerImageTools(api)
-    const shutdown = new AbortController()
-    api.onDispose(() => shutdown.abort())
-    api.route('/settings-schema', () => ({ ok: true, proxyField, searchAccessField, accountFields, scheduleFields, scheduleDefaults,
+    registerAdmin(api, vault)
+    registerSearch(runtime)
+    api.route('/settings-schema', () => ({ ok: true, proxyField, searchAccessField, accountFields, scheduleFields, scheduleDefaults, ...vault.status(),
       ratings: Object.fromEntries(Object.entries(booruSources).map(([id, site]) => [id, site.ratings.map(value => ({ value, label: ratingLabels[value] }))])),
     }))
-    let probeBusy = false
-    let lastProbe = 0
-    const testConnection = source => async (req, res) => {
-      const http = api.core.http
-      if (!http?.requirePanelAdmin) return { ok: false, message: '连接检测需要安装 daily-art 宿主兼容补丁' }
-      if (!http.requirePanelAdmin(req, res)) return
-      if (req.method !== 'POST') return { ok: false, message: '请使用面板的检测按钮' }
-      if (Number(req.headers?.['content-length']) > 4096) { http.send(res, 413, { ok: false, message: '检测请求不得超过 4 KiB' }); return }
-      if (probeBusy || Date.now() - lastProbe < 2000) { http.send(res, 429, { ok: false, message: '正在检测或请求太频繁，请稍后再试' }); return }
-      probeBusy = true
-      try {
-        let input
-        try { input = await http.raw(req, 4096) } catch { http.send(res, 413, { ok: false, message: '检测请求不得超过 4 KiB' }); return }
-        try { input = JSON.parse(input.toString('utf8') || '{}') } catch { http.send(res, 400, { ok: false, message: '检测请求不是有效 JSON' }); return }
-        // 检测只用提交的草稿密钥和管理员保存的代理。
-        const credentials = source === 'konachan' ? konachanCredentials(input || {}) : {}
-        const proxyUrl = konachanProxy(api.settings())
-        try { validateKonachanProxy(proxyUrl) } catch (error) { return { ok: false, message: error.message } }
-        const results = await probeKonachan(credentials, { source, signal: shutdown.signal, proxyUrl, checkImage: true, log: api.log, operation: 'connection-test', trace: true })
-        return { ok: true, authenticatedRequest: Boolean(credentials.apiKey), proxyConfigured: Boolean(proxyUrl), results }
-      } finally { probeBusy = false; lastProbe = Date.now() }
-    }
-    api.route('/test-konachan', testConnection('konachan'))
-    api.route('/test-yandere', testConnection('yandere'))
   },
 }

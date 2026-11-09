@@ -2,7 +2,7 @@ name: Daily Art checks
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'codex/**']
     tags: ['v*']
   pull_request:
   workflow_dispatch:
@@ -19,22 +19,28 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: aureth-labs/dsh-aurabot-qq
-          ref: a41519c0da82916ae3b374f4df71a09975883e45
+          ref: 0a0ccb1cc401dee00ce0faac2cffbf57d0efecda
           path: host
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - name: Apply the published compatibility patch
-        working-directory: host
+      - uses: actions/checkout@v4
+        with:
+          repository: aureth-labs/dsh-aurabot-qq-mods
+          ref: 94a2b955d7c7fe9b5e84584a8e6f67d3752b2477
+          path: market
+          persist-credentials: false
+      - name: Build the module with the official market scripts
         run: |
-          git apply --check ../compat/aurabot-host.patch
-          git apply ../compat/aurabot-host.patch
-      - name: Install the module and regression tests
-        run: |
-          mkdir -p host/modules/daily-art
-          cp LICENSE README.md module.json index.mjs konachan.mjs image-tools.mjs diagnostics.mjs transport.mjs panel.js host/modules/daily-art/
-          cp test/daily-art.test.js test/daily-art-host.test.js host/test/
-      - name: Run host and module tests
-        working-directory: host
-        run: node --test --test-reporter=dot 'test/**/*.test.js'
+          mkdir market/modules/daily-art
+          cp -r index.mjs panel.js module.json lib README.md LICENSE market/modules/daily-art/
+          cd market
+          npm run catalog
+          npm run check
+          npm run pack -- --only daily-art
+      - name: Test module and install on the unmodified host
+        env:
+          AURABOT_PLUGIN_DIR: ${{ github.workspace }}/host
+          DA_MARKET_DIST: ${{ github.workspace }}/market/dist
+        run: node --test 'test/*.test.js'
