@@ -1,18 +1,20 @@
 # daily-art · 每日推图
 
-适用于 [Aurabot QQ](https://github.com/aureth-labs/dsh-aurabot-qq) 的 Konachan 和 Yande.re 推图模块。支持白名单定时推送和 QQ 会话按需找图。定时任务可设置推送时间和张数，不消耗模型 token。按需找图由当前会话的 Agent 理解需求，模块负责查询、筛选、下载和发送。
+适用于 [Aurabot QQ](https://github.com/aureth-labs/dsh-aurabot-qq) 的 Konachan 和 Yande.re 推图模块。支持白名单定时推送和 QQ 会话按需找图。定时任务可设置推送时间和张数，不消耗模型 token。按需找图由模型理解需求，模块负责查询、筛选、下载和发送。
 
 ## 安装
 
-需要安装配套宿主补丁的 Aurabot 和已连接的 QQ 网关。本模块无 npm 依赖。可选代理功能需要 Node.js 24.5 或以上。
+需要原版 Aurabot 1.2.0 或更高版本和已连接的 QQ 网关。本模块无 npm 依赖。可选代理功能需要 Node.js 24.5 或以上。CI 使用上游提交 [`0a0ccb1`](https://github.com/aureth-labs/dsh-aurabot-qq/commit/0a0ccb1cc401dee00ce0faac2cffbf57d0efecda) 验证市场安装流程。
 
-**升级到 2.0 前先更新宿主。** 从 Aurabot 上游提交 [`a41519c`](https://github.com/aureth-labs/dsh-aurabot-qq/commit/a41519c0da82916ae3b374f4df71a09975883e45) 安装，或核对当前宿主是否已经包含 [`compat/aurabot-host.patch`](compat/aurabot-host.patch)。在宿主源码目录先执行 `git apply --check <补丁路径>`，再执行 `git apply <补丁路径>`，重建 Docker 镜像或重启使用该源码的 Aurabot。补丁提供按 QQ 消息 ID 绑定的授权、冷启动凭据遮罩和管理接口鉴权。没有宿主补丁时，找图和连接检测会拒绝执行。
+上架后可在 Aurabot 面板的「模块市场」点安装。当前 v3 可用下方的开发分支进行试装。
+
+从 2.x 升级时，保留 Aurabot 数据卷和 `modules-data/daily-art/`。若已有宿主补丁，请在原部署先加载 v3，让模块把旧凭据迁入自身数据目录，再切换到原版宿主。先更新模块可避免旧凭据在未迁移时被原版宿主的配置接口读取。升级前保留安全的备份，旧配置和备份可能含有凭据。
 
 把仓库克隆到 Aurabot 数据目录的 `modules/daily-art` 下。目录名要与模块 ID `daily-art` 一致，`index.mjs` 和 `module.json` 应直接位于该目录。
 
 ```powershell
 $moduleRoot = Join-Path $env:USERPROFILE '.dsh\plugins-data\aurabot\modules'
-git clone https://github.com/Reinero/aurabot-daily-art.git (Join-Path $moduleRoot 'daily-art')
+git clone --branch codex/daily-art-v3 https://github.com/Reinero/aurabot-daily-art.git (Join-Path $moduleRoot 'daily-art')
 ```
 
 如果 Aurabot 使用自定义数据目录，请把 `$moduleRoot` 换成该目录下的 `modules`。Docker 部署时，把模块复制到 **Aurabot 容器**对应的数据卷，确保服务运行用户可读写该目录。加载后可在 Aurabot 的「系统 → 每日推图」配置。
@@ -46,33 +48,36 @@ git clone https://github.com/Reinero/aurabot-daily-art.git (Join-Path $moduleRoo
 
 ## 图源、凭据和代理
 
-在「每日推图」可以选填 Konachan 用户名和个人 API Key。先点「检测连接」，再点「保存设置」。定时推送与按需搜索使用已保存的密钥访问 `konachan.net`，分级仍为 Safe。未配置密钥时使用公开接口。密钥保存后输入框为空，如需移除，请点「清除密钥」再保存。
+在主人 QQ 私聊发送「每日推图配对」，把收到的一次性配对码填入「每日推图」。配对码 2 分钟有效，管理会话 15 分钟有效。配对后可保存或清除 API Key 和代理地址，并检测连接。普通推送设置使用页面底部的「保存设置」。
+API Key 和代理地址保存在 `modules-data/daily-art/credentials.json`，请保护该文件和备份。清除密钥或代理时先点对应清除按钮，再点「保存凭据」。定时推送与按需搜索使用已保存的密钥访问 `konachan.net`，留空使用公开接口。
 账号凭据不完整或认证被拒绝时，自动用同一代理设置重试公开接口。连接检测会显示回退原因。遇到 Cloudflare 验证或网络故障时，显示对应错误。
 
-「共用代理地址」可填写 `http://` 或 `https://` 代理。Windows 上的本机代理可填写容器能访问的地址，例如 `http://host.docker.internal:7890`。留空时直连。如已保存代理，要恢复直连可点「清除代理」并保存。两个图源的 API 请求、图片下载共用此设置。保存后在各自分栏点「检测连接」可检查 API 和样图下载，不会发送 QQ 消息。代理功能需要 Node.js 24.5 或以上。
+「共用代理地址」可填写 `http://` 或 `https://` 代理。Windows 上的本机代理可填写容器能访问的地址，例如 `http://host.docker.internal:7890`。未配置时直连。两个图源的 API 请求和图片下载共用此设置。在各自分栏点「检测连接」可检查 API 和样图下载。代理功能需要 Node.js 24.5 或以上。
 
 Konachan 日常请求 `konachan.net` 的 `/post.json`、`/tag.json` 和候选图片地址，连接检测另外查询 `konachan.com/post.json`。Yande.re 请求 `yande.re` 的 API，并从 `files.yande.re` 等站内地址下载图片。单张图片下载上限为 4 MiB。
 
 ## 排查与数据
 
 在「系统 → 日志」查看 `[Konachan]` 记录。连接检测、请求失败和公开接口回退会记录站点、阶段、HTTP 状态、耗时、代理模式及认证方式。Cloudflare 响应会附上 Ray ID（若返回），便于站点运营方查询对应事件。日志省略密钥、代理地址、查询参数和响应正文。
-连接检测仅供宿主管理面调用，正文上限为 4 KiB，同一时刻只运行一次。Docker 部署通过已认证的面板入口访问，宿主用 `PANEL_PASSWORD` 或 `AURABOT_PANEL_PASSWORD` 核对管理认证。
+连接检测要求模块自己的管理会话，正文上限为 4 KiB，同一时刻只运行一次。
 
 批次和已使用的来源 ID 存在 Aurabot 数据目录的 `modules-data/daily-art/delivery.json`，重启后保留。移除记录会使历史图片重新进入候选。
 Yande.re 使用单独的 `modules-data/daily-art/delivery-yandere.json`，API 请求访问 `yande.re`，图片可能从 `files.yande.re` 下载。日志用 `[Yande.re]` 标记。
 
 ## 在 QQ 里按需找图
 
-在 Aurabot 已允许聊天的 QQ 会话里，用「konachan找图」开头。例如「konachan找图 初音未来的横图，按评分排序」。Agent 会在同一轮查找并发图，再附上分数、分辨率、题材、人物和作品链接。没指定数量时发 1 张。
+在 Aurabot 已允许聊天的 QQ 会话里，用「konachan找图」开头。例如「konachan找图 初音未来的横图，按评分排序」。模块会在同一轮查找并发图，再附上分数、分辨率、站点标签和作品链接。没指定数量时发 1 张。
 想先选图时，在请求里加「先列候选」，再在同一会话发「konachan找图 发第 2 张」。
 候选在该会话保留 10 分钟。主人私聊需要「受限」或「完整」权限。定时推送开关及其白名单用于定时任务。
 非主人私聊默认不能按需找图。要开放给指定用户，先将对方加入 Aurabot「系统 → 权限」的私聊白名单，再到「系统 → 每日推图」开启「允许私聊白名单用户按需找图」并保存。该开关适用于两个图源，白名单用户只可查 Safe（`s`）。
 
-| 工具 | 职责 |
+找图命令由模块接管。原版宿主通过 `api.ask` 返回结构化筛选计划，这三个操作在模块内按请求执行。
+
+| 模块操作 | 职责 |
 | --- | --- |
 | `image_search_help` | 返回图源、筛选规则、排序方式。传 `tag_prefix` 可查 Konachan 的英文标签。 |
 | `image_search` | 返回候选的作品 ID、评分、尺寸、标签和作品页。支持包含或排除标签、评分和尺寸下限、画幅，以及按最新、高分或分辨率排序。 |
-| `image_send` | 使用搜索批次的 `search_id` 和候选作品 ID，下载并向当前 QQ 会话发送最多 5 张图片。 |
+| `image_send` | 从发起人的同一会话、图源及分级的候选中选图，下载并发送最多 5 张图片。 |
 
 发「yande找图 初音未来的横图」即可使用 Yande.re。按需找图默认只查 Safe（`s`），与定时推送的分级勾选独立。只有主人紧跟在关键词后明确填写 `rating:q` 或 `rating:e` 才会查相应分级，图源不支持时会提示。分两步选图时继续用同一图源和分级，例如「yande找图 rating:q 发第 2 张」。Agent 根据元数据挑选，图片由模块下载并交给 QQ 网关。
 
